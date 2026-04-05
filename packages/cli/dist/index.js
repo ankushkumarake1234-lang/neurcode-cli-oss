@@ -46,6 +46,7 @@ const audit_1 = require("./commands/audit");
 const contract_1 = require("./commands/contract");
 const feedback_1 = require("./commands/feedback");
 const guard_1 = require("./commands/guard");
+const bootstrap_1 = require("./commands/bootstrap");
 const messages_1 = require("./utils/messages");
 const config_2 = require("./config");
 // Read version from package.json
@@ -164,6 +165,46 @@ program
 (0, feedback_1.feedbackCommand)(program);
 (0, guard_1.runtimeGuardCommand)(program);
 (0, repo_1.repoCommand)(program);
+program
+    .command('bootstrap')
+    .description('One-command governance setup (policy bootstrap + optional contract import + runtime guard)')
+    .option('--pack <id>', 'Policy pack ID to bootstrap (default: soc2)', 'soc2')
+    .option('--force-pack', 'Replace existing installed policy pack during bootstrap (default)', true)
+    .option('--no-force-pack', 'Do not replace an already-installed policy pack')
+    .option('--intent <text>', 'Deterministic intent constraints for policy compile')
+    .option('--require-deterministic-match', 'Fail bootstrap if policy intent cannot be compiled deterministically')
+    .option('--include-dashboard', 'Include dashboard custom policies in policy bootstrap')
+    .option('--require-dashboard', 'Fail if dashboard custom policies cannot be loaded')
+    .option('--provider <name>', 'External plan provider for contract import (default: generic)', 'generic')
+    .option('--plan-input <path>', 'Import external plan from file (JSON or text)')
+    .option('--plan-text <payload>', 'Import external plan from inline text/JSON')
+    .option('--plan-stdin', 'Import external plan from stdin')
+    .option('--skip-contract', 'Skip contract import stage')
+    .option('--skip-guard', 'Skip runtime guard start stage')
+    .option('--strict-guard', 'Require strict runtime guard start (default)', true)
+    .option('--no-strict-guard', 'Allow advisory runtime guard start by default')
+    .option('--allow-advisory-fallback', 'Fallback to advisory runtime guard when strict prerequisites are missing', true)
+    .option('--no-allow-advisory-fallback', 'Disable advisory fallback and fail bootstrap when strict guard start fails')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options) => {
+    await (0, bootstrap_1.bootstrapCommand)({
+        pack: options.pack,
+        forcePack: options.forcePack,
+        intent: options.intent,
+        requireDeterministicMatch: options.requireDeterministicMatch,
+        includeDashboard: options.includeDashboard,
+        requireDashboard: options.requireDashboard,
+        provider: options.provider,
+        planInput: options.planInput,
+        planText: options.planText,
+        planStdin: options.planStdin,
+        skipContract: options.skipContract,
+        skipGuard: options.skipGuard,
+        strictGuard: options.strictGuard,
+        allowAdvisoryFallback: options.allowAdvisoryFallback,
+        json: options.json,
+    });
+});
 program
     .command('login')
     .description('Authenticate CLI with Neurcode (opens browser for approval)')
@@ -556,6 +597,8 @@ program
     .option('--enforce-change-contract', 'Require change contract enforcement in verify stages')
     .option('--no-enforce-change-contract', 'Disable change contract enforcement in verify stages')
     .option('--require-runtime-guard', 'Require `neurcode guard check` to pass before each remediation attempt')
+    .option('--auto-repair-ai-log', 'Attempt deterministic AI change-log integrity repair before remediation (default)', true)
+    .option('--no-auto-repair-ai-log', 'Disable automatic AI change-log integrity repair preflight')
     .option('--no-record', 'Disable cloud recording during verify/ship runs')
     .option('--skip-tests', 'Skip tests during remediation ship loop (default: true)')
     .option('--no-publish-card', 'Do not publish merge confidence card during remediation ship loop')
@@ -573,6 +616,7 @@ program
         strictArtifacts: options.strictArtifacts !== false,
         enforceChangeContract: options.enforceChangeContract !== false,
         requireRuntimeGuard: options.requireRuntimeGuard === true,
+        autoRepairAiLog: options.autoRepairAiLog !== false,
         noRecord: options.record === false,
         skipTests: options.skipTests === true ? true : undefined,
         publishCard: options.publishCard !== false,

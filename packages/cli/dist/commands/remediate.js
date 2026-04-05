@@ -2,6 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.remediateCommand = remediateCommand;
 const child_process_1 = require("child_process");
+const fs_1 = require("fs");
+const project_root_1 = require("../utils/project-root");
+const core_1 = require("@neurcode-ai/core");
+const analysis_1 = require("@neurcode-ai/analysis");
 let chalk;
 try {
     chalk = require('chalk');
@@ -182,22 +186,192 @@ function hasImproved(before, after) {
     }
     return false;
 }
+function resolveAutoRepairAiLog(options) {
+    if (options.autoRepairAiLog === true)
+        return true;
+    if (options.autoRepairAiLog === false)
+        return false;
+    if (process.env.NEURCODE_REMEDIATE_AUTO_REPAIR_AI_LOG === '0')
+        return false;
+    return true;
+}
+function parseSigningKeyRing(raw) {
+    if (!raw || !raw.trim()) {
+        return {};
+    }
+    const out = {};
+    for (const token of raw.split(/[,\n;]+/)) {
+        const trimmed = token.trim();
+        if (!trimmed)
+            continue;
+        const separator = trimmed.indexOf('=');
+        if (separator <= 0)
+            continue;
+        const keyId = trimmed.slice(0, separator).trim();
+        const key = trimmed.slice(separator + 1).trim();
+        if (!keyId || !key)
+            continue;
+        out[keyId] = key;
+    }
+    return out;
+}
+function resolveAiLogSigningConfig() {
+    const signingKeys = parseSigningKeyRing(process.env.NEURCODE_GOVERNANCE_SIGNING_KEYS);
+    const envSigningKey = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY?.trim()
+        || process.env.NEURCODE_AI_LOG_SIGNING_KEY?.trim()
+        || '';
+    let signingKey = envSigningKey || null;
+    let signingKeyId = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY_ID?.trim() || null;
+    if (!signingKey && Object.keys(signingKeys).length > 0) {
+        if (signingKeyId && signingKeys[signingKeyId]) {
+            signingKey = signingKeys[signingKeyId];
+        }
+        else {
+            const fallbackKeyId = Object.keys(signingKeys).sort((a, b) => a.localeCompare(b))[0];
+            signingKey = signingKeys[fallbackKeyId];
+            signingKeyId = signingKeyId || fallbackKeyId;
+        }
+    }
+    const signer = process.env.NEURCODE_GOVERNANCE_SIGNER?.trim()
+        || process.env.USER
+        || 'neurcode-cli';
+    return {
+        signingKey,
+        signingKeyId,
+        signer,
+    };
+}
+function isAiChangeJustification(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+    const candidate = value;
+    return (typeof candidate.task === 'string'
+        && typeof candidate.generatedAt === 'string'
+        && Array.isArray(candidate.changes));
+}
+function extractChangeJustificationFromLog(projectRoot) {
+    const logPath = (0, core_1.resolveNeurcodeFile)(projectRoot, core_1.AI_CHANGE_LOG_FILENAME);
+    const raw = (0, core_1.readJsonFile)(logPath, null);
+    if (!raw)
+        return null;
+    if (isAiChangeJustification(raw)) {
+        return raw;
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+        const envelope = raw;
+        const nested = envelope.changeJustification;
+        if (isAiChangeJustification(nested)) {
+            return nested;
+        }
+    }
+    return null;
+}
+function shouldAttemptAiLogRepair(verifyRun) {
+    const payloadMessage = asString(verifyRun.payload, 'message') || '';
+    const combined = `${payloadMessage}\n${verifyRun.stdout}\n${verifyRun.stderr}`.toLowerCase();
+    if (combined.includes('ai change-log integrity check failed')) {
+        return true;
+    }
+    const violations = verifyRun.payload?.violations;
+    if (Array.isArray(violations)) {
+        for (const entry of violations) {
+            if (!entry || typeof entry !== 'object')
+                continue;
+            const rule = entry.rule;
+            if (typeof rule === 'string' && rule.toLowerCase().includes('ai_change_log_integrity')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+function attemptAiLogIntegrityRepair(projectRoot) {
+    const payload = extractChangeJustificationFromLog(projectRoot);
+    if (!payload) {
+        return {
+            attempted: true,
+            repaired: false,
+            backupPath: null,
+            message: 'No valid AI change-log payload found to repair.',
+        };
+    }
+    const auditPath = (0, core_1.resolveNeurcodeFile)(projectRoot, core_1.AI_CHANGE_LOG_AUDIT_FILENAME);
+    let backupPath = null;
+    try {
+        if ((0, fs_1.existsSync)(auditPath)) {
+            backupPath = `${auditPath}.backup.${Date.now()}`;
+            (0, fs_1.copyFileSync)(auditPath, backupPath);
+            (0, fs_1.unlinkSync)(auditPath);
+        }
+    }
+    catch (error) {
+        return {
+            attempted: true,
+            repaired: false,
+            backupPath,
+            message: `Failed to prepare AI log audit repair: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        };
+    }
+    try {
+        const signing = resolveAiLogSigningConfig();
+        (0, analysis_1.writeAiChangeLogWithIntegrity)(projectRoot, payload, {
+            signingKey: signing.signingKey,
+            keyId: signing.signingKeyId,
+            signer: signing.signer,
+        });
+        return {
+            attempted: true,
+            repaired: true,
+            backupPath,
+            message: backupPath
+                ? `AI change-log integrity repaired (audit backup: ${backupPath}).`
+                : 'AI change-log integrity repaired.',
+        };
+    }
+    catch (error) {
+        return {
+            attempted: true,
+            repaired: false,
+            backupPath,
+            message: `AI change-log repair failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        };
+    }
+}
 async function remediateCommand(options = {}) {
+    const projectRoot = (0, project_root_1.resolveNeurcodeProjectRoot)(process.cwd());
     const strictArtifacts = resolveStrictArtifacts(options);
     const enforceChangeContract = resolveEnforceChangeContract(options, strictArtifacts);
     const requireRuntimeGuard = resolveRequireRuntimeGuard(options);
+    const autoRepairAiLog = resolveAutoRepairAiLog(options);
     const maxAttempts = Number.isFinite(options.maxFixAttempts) && Number(options.maxFixAttempts) >= 0
         ? Math.floor(Number(options.maxFixAttempts))
         : 2;
     try {
-        const baselineVerifyRun = await runCliJson(buildVerifyArgs(options, strictArtifacts, enforceChangeContract));
+        let baselineVerifyRun = await runCliJson(buildVerifyArgs(options, strictArtifacts, enforceChangeContract));
         let currentSnapshot = toVerifySnapshot(baselineVerifyRun);
+        let aiLogRepair = {
+            attempted: false,
+            repaired: false,
+            backupPath: null,
+            message: null,
+        };
+        if (autoRepairAiLog && !isVerifyPass(currentSnapshot) && shouldAttemptAiLogRepair(baselineVerifyRun)) {
+            aiLogRepair = attemptAiLogIntegrityRepair(projectRoot);
+            if (aiLogRepair.repaired) {
+                baselineVerifyRun = await runCliJson(buildVerifyArgs(options, strictArtifacts, enforceChangeContract));
+                currentSnapshot = toVerifySnapshot(baselineVerifyRun);
+            }
+        }
         const attempts = [];
         let stopReason = 'verify_passed_without_remediation';
         if (isVerifyPass(currentSnapshot)) {
             const output = {
                 success: true,
                 remediated: false,
+                preflight: {
+                    aiLogRepair,
+                },
                 strictMode: {
                     strictArtifacts,
                     enforceChangeContract,
@@ -215,6 +389,11 @@ async function remediateCommand(options = {}) {
             }
             else {
                 console.log(chalk.bold.cyan('\n🛠️  Neurcode Remediate\n'));
+                if (aiLogRepair.attempted) {
+                    console.log(aiLogRepair.repaired
+                        ? chalk.green(`✅ ${aiLogRepair.message || 'AI change-log integrity repaired.'}`)
+                        : chalk.yellow(`⚠️  ${aiLogRepair.message || 'AI change-log integrity repair was attempted but did not complete.'}`));
+                }
                 console.log(chalk.green('✅ Verify already PASS. No remediation required.'));
             }
             return;
@@ -224,6 +403,9 @@ async function remediateCommand(options = {}) {
             const output = {
                 success: false,
                 remediated: false,
+                preflight: {
+                    aiLogRepair,
+                },
                 strictMode: {
                     strictArtifacts,
                     enforceChangeContract,
@@ -317,6 +499,9 @@ async function remediateCommand(options = {}) {
         const output = {
             success,
             remediated: attempts.length > 0,
+            preflight: {
+                aiLogRepair,
+            },
             strictMode: {
                 strictArtifacts,
                 enforceChangeContract,
@@ -336,6 +521,14 @@ async function remediateCommand(options = {}) {
             process.exit(success ? 0 : 1);
         }
         console.log(chalk.bold.cyan('\n🛠️  Neurcode Remediate\n'));
+        if (output.preflight.aiLogRepair.attempted) {
+            console.log(output.preflight.aiLogRepair.repaired
+                ? chalk.green(`✅ ${output.preflight.aiLogRepair.message || 'AI change-log integrity repaired before remediation.'}`)
+                : chalk.yellow(`⚠️  ${output.preflight.aiLogRepair.message || 'AI change-log integrity repair was attempted but did not complete.'}`));
+            if (output.preflight.aiLogRepair.backupPath) {
+                console.log(chalk.dim(`   Audit backup: ${output.preflight.aiLogRepair.backupPath}`));
+            }
+        }
         console.log(chalk.dim(`Baseline verify: ${output.baseline.verdict || 'UNKNOWN'}`
             + `${output.baseline.score != null ? ` (score ${output.baseline.score})` : ''}`
             + `, violations: ${output.baseline.violations}`));
@@ -373,6 +566,14 @@ async function remediateCommand(options = {}) {
             emitJson({
                 success: false,
                 remediated: false,
+                preflight: {
+                    aiLogRepair: {
+                        attempted: false,
+                        repaired: false,
+                        backupPath: null,
+                        message: null,
+                    },
+                },
                 strictMode: {
                     strictArtifacts,
                     enforceChangeContract,

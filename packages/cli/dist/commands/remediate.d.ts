@@ -10,6 +10,7 @@ interface RemediateOptions {
     strictArtifacts?: boolean;
     enforceChangeContract?: boolean;
     requireRuntimeGuard?: boolean;
+    autoRepairAiLog?: boolean;
     noRecord?: boolean;
     skipTests?: boolean;
     publishCard?: boolean;
