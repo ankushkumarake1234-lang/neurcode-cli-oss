@@ -1,0 +1,1201 @@
+"use strict";
+/**
+ * Neurcode Brain - Local Context, Memory, and Cache Management
+ *
+ * Goals:
+ * - Enterprise-grade observability: users can see what "Brain" knows and why cache hits/misses happen
+ * - Multi-tenant safety: everything is scoped by orgId + projectId
+ * - Robust ops: export + clear for compliance and troubleshooting
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.brainCommand = brainCommand;
+const child_process_1 = require("child_process");
+const fs_1 = require("fs");
+const path_1 = require("path");
+const config_1 = require("../config");
+const project_root_1 = require("../utils/project-root");
+const state_1 = require("../utils/state");
+const neurcode_context_1 = require("../utils/neurcode-context");
+const plan_cache_1 = require("../utils/plan-cache");
+const messages_1 = require("../utils/messages");
+const brain_context_1 = require("../utils/brain-context");
+const ask_cache_1 = require("../utils/ask-cache");
+// Import chalk with fallback
+let chalk;
+try {
+    chalk = require('chalk');
+}
+catch {
+    chalk = {
+        green: (str) => str,
+        yellow: (str) => str,
+        red: (str) => str,
+        bold: (str) => str,
+        dim: (str) => str,
+        cyan: (str) => str,
+        white: (str) => str,
+    };
+}
+function safeFileSize(path) {
+    try {
+        if (!(0, fs_1.existsSync)(path))
+            return null;
+        return (0, fs_1.statSync)(path).size;
+    }
+    catch {
+        return null;
+    }
+}
+function countOccurrences(haystack, needle) {
+    if (!haystack || !needle)
+        return 0;
+    let count = 0;
+    let idx = 0;
+    while (true) {
+        const next = haystack.indexOf(needle, idx);
+        if (next === -1)
+            break;
+        count++;
+        idx = next + needle.length;
+    }
+    return count;
+}
+function scanFiles(dir, baseDir, maxFiles = 600) {
+    // Light-weight filesystem scan used only as a fallback when git isn't available.
+    // Keep it deterministic-ish but fast: only capture relative paths.
+    const { readdirSync, statSync } = require('fs');
+    const { join, relative } = require('path');
+    const files = [];
+    const ignoreDirs = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.cache', 'coverage']);
+    const ignoreExts = new Set(['map', 'log', 'lock', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'svg', 'woff', 'woff2', 'ttf', 'eot']);
+    function walk(current) {
+        if (files.length >= maxFiles)
+            return;
+        let entries = [];
+        try {
+            entries = readdirSync(current);
+        }
+        catch {
+            return;
+        }
+        for (const entry of entries) {
+            if (files.length >= maxFiles)
+                break;
+            if (entry.startsWith('.')) {
+                // keep common dotfiles, but skip big hidden dirs
+                if (ignoreDirs.has(entry))
+                    continue;
+            }
+            const full = join(current, entry);
+            let st;
+            try {
+                st = statSync(full);
+            }
+            catch {
+                continue;
+            }
+            if (st.isDirectory()) {
+                if (ignoreDirs.has(entry))
+                    continue;
+                walk(full);
+                continue;
+            }
+            if (!st.isFile())
+                continue;
+            const ext = entry.split('.').pop()?.toLowerCase();
+            if (ext && ignoreExts.has(ext))
+                continue;
+            files.push(relative(baseDir, full));
+        }
+    }
+    walk(dir);
+    return files.slice(0, maxFiles);
+}
+function normalizeFsPath(filePath) {
+    return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+function scopeGraphKey(scope) {
+    if (!scope.orgId || !scope.projectId)
+        return null;
+    return `${scope.orgId}::${scope.projectId}`;
+}
+function inferModuleKey(filePath) {
+    const normalized = normalizeFsPath(filePath);
+    const parts = normalized.split('/').filter(Boolean);
+    if (parts.length >= 2)
+        return `${parts[0]}/${parts[1]}`;
+    return parts[0] || 'root';
+}
+function loadTeamMemoryScopeStore(cwd, scope) {
+    const key = scopeGraphKey(scope);
+    const path = (0, brain_context_1.getBrainContextPath)(cwd);
+    if (!(0, fs_1.existsSync)(path))
+        return null;
+    try {
+        const raw = (0, fs_1.readFileSync)(path, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (!parsed || !parsed.scopes || typeof parsed.scopes !== 'object')
+            return null;
+        if (key) {
+            return parsed.scopes[key] || null;
+        }
+        // Repo fallback mode: merge all scopes so graph queries can still run
+        // even when org/project initialization hasn't happened yet.
+        const mergedFiles = {};
+        const mergedEvents = [];
+        for (const scopeStore of Object.values(parsed.scopes)) {
+            for (const [rawPath, fileEntry] of Object.entries(scopeStore.files || {})) {
+                const normalizedPath = normalizeFsPath(rawPath);
+                const existing = mergedFiles[normalizedPath];
+                const existingTs = Date.parse(existing?.lastSeenAt || existing?.updatedAt || '') || 0;
+                const incomingTs = Date.parse(fileEntry?.lastSeenAt || fileEntry?.updatedAt || '') || 0;
+                if (!existing || incomingTs >= existingTs) {
+                    mergedFiles[normalizedPath] = { ...fileEntry, path: normalizedPath };
+                }
+            }
+            if (Array.isArray(scopeStore.events)) {
+                mergedEvents.push(...scopeStore.events);
+            }
+        }
+        return { files: mergedFiles, events: mergedEvents };
+    }
+    catch {
+        return null;
+    }
+}
+function collectGitAuthorship(cwd, sinceDays) {
+    const authorTouches = new Map();
+    const fileTouches = new Map();
+    const safeDays = Math.min(3650, Math.max(1, Math.floor(sinceDays)));
+    const result = (0, child_process_1.spawnSync)('git', ['log', `--since=${safeDays}.days`, '--name-only', '--pretty=format:__AUTHOR__%an'], {
+        cwd,
+        encoding: 'utf-8',
+        maxBuffer: 1024 * 1024 * 50,
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if ((result.status ?? 1) !== 0 || !result.stdout) {
+        return { authorTouches, fileTouches };
+    }
+    let currentAuthor = '';
+    const lines = result.stdout.split(/\r?\n/);
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line)
+            continue;
+        if (line.startsWith('__AUTHOR__')) {
+            currentAuthor = line.replace('__AUTHOR__', '').trim() || 'Unknown';
+            continue;
+        }
+        if (!currentAuthor)
+            continue;
+        const path = normalizeFsPath(line);
+        if (!path || path.startsWith('.git/') || path.startsWith('node_modules/'))
+            continue;
+        authorTouches.set(currentAuthor, (authorTouches.get(currentAuthor) || 0) + 1);
+        const byAuthor = fileTouches.get(path) || new Map();
+        byAuthor.set(currentAuthor, (byAuthor.get(currentAuthor) || 0) + 1);
+        fileTouches.set(path, byAuthor);
+    }
+    return { authorTouches, fileTouches };
+}
+function rankTopEntries(entries, score, limit) {
+    return [...entries]
+        .sort((a, b) => score(b) - score(a))
+        .slice(0, Math.max(1, limit));
+}
+function sortIsoDesc(a, b) {
+    const aTime = a ? Date.parse(a) : 0;
+    const bTime = b ? Date.parse(b) : 0;
+    return bTime - aTime;
+}
+function getBrainScope(projectIdOverride) {
+    const cwd = (0, project_root_1.resolveNeurcodeProjectRoot)(process.cwd());
+    const orgId = (0, state_1.getOrgId)();
+    const orgName = (0, state_1.getOrgName)();
+    const stateProjectId = (0, state_1.getProjectId)();
+    const configProjectId = (0, config_1.loadConfig)().projectId || null;
+    const projectId = projectIdOverride || stateProjectId || configProjectId;
+    return { cwd, orgId, orgName, projectId };
+}
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0)
+        return 'unknown';
+    if (bytes < 1024)
+        return `${bytes} B`;
+    if (bytes < 1024 * 1024)
+        return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+function renderBrainExportMarkdown(input) {
+    const lines = [];
+    lines.push('# Neurcode Brain Export');
+    lines.push('');
+    lines.push(`Generated: ${input.generatedAt}`);
+    lines.push(`Repo Root: ${input.cwd}`);
+    lines.push('');
+    lines.push('## Scope');
+    lines.push(`- Organization: ${input.scope.orgName || input.scope.orgId || '(not set)'}`);
+    if (input.scope.orgId)
+        lines.push(`- Org ID: ${input.scope.orgId}`);
+    lines.push(`- Project ID: ${input.scope.projectId || '(not set)'}`);
+    lines.push('');
+    if (input.cacheStats) {
+        lines.push('## Plan Cache');
+        lines.push(`- Entries (repo): ${input.cacheStats.totalEntries}`);
+        if (typeof input.cacheStats.scopedEntries === 'number') {
+            lines.push(`- Entries (scope): ${input.cacheStats.scopedEntries}`);
+        }
+        lines.push('');
+    }
+    lines.push('## Static Context Sources');
+    if (input.staticContext.sources.length === 0) {
+        lines.push('- (none)');
+    }
+    else {
+        input.staticContext.sources.forEach((s) => {
+            lines.push(`- ${s.label}: ${s.path} (${formatBytes(s.bytes)}${s.truncated ? ', truncated' : ''})`);
+        });
+    }
+    lines.push('');
+    lines.push('## Static Context (Combined)');
+    if (!input.staticContext.text.trim()) {
+        lines.push('_No context files found._');
+    }
+    else {
+        lines.push('```text');
+        lines.push(input.staticContext.text.trim());
+        lines.push('```');
+    }
+    lines.push('');
+    lines.push('## Architecture Memory (.neurcode/architecture.json)');
+    if (!input.architectureJson) {
+        lines.push('_Not found._');
+    }
+    else {
+        lines.push('```json');
+        lines.push(JSON.stringify(input.architectureJson, null, 2));
+        lines.push('```');
+    }
+    lines.push('');
+    lines.push('## Org/Project Memory (Tail)');
+    if (!input.memoryTail?.trim()) {
+        lines.push('_No memory found for this scope._');
+    }
+    else {
+        lines.push('```text');
+        lines.push(input.memoryTail.trim());
+        lines.push('```');
+    }
+    lines.push('');
+    return lines.join('\n');
+}
+function brainCommand(program) {
+    const brain = program.command('brain').description('Manage Neurcode Brain (local cache, context, and memory)');
+    brain
+        .command('status')
+        .description('Show local Brain status (scope, cache, memory, context sources)')
+        .option('--project-id <id>', 'Project ID override')
+        .option('--json', 'Output as JSON')
+        .action(async (options) => {
+        const scope = getBrainScope(options.projectId);
+        const allCached = (0, plan_cache_1.listCachedPlans)(scope.cwd);
+        const scopedCached = scope.orgId && scope.projectId
+            ? allCached.filter((e) => e.input.orgId === scope.orgId && e.input.projectId === scope.projectId)
+            : [];
+        const allAskCached = (0, ask_cache_1.listCachedAsks)(scope.cwd);
+        const scopedAskCached = scope.orgId && scope.projectId
+            ? allAskCached.filter((e) => e.input.orgId === scope.orgId && e.input.projectId === scope.projectId)
+            : [];
+        const staticContext = (0, neurcode_context_1.loadStaticNeurcodeContext)(scope.cwd, scope.orgId && scope.projectId ? { orgId: scope.orgId, projectId: scope.projectId } : undefined);
+        const memoryPath = scope.orgId && scope.projectId ? (0, neurcode_context_1.getOrgProjectMemoryPath)(scope.cwd, scope.orgId, scope.projectId) : null;
+        const memoryExists = memoryPath ? (0, fs_1.existsSync)(memoryPath) : false;
+        const memoryBytes = memoryPath ? safeFileSize(memoryPath) : null;
+        let memoryEntries = null;
+        if (memoryExists && memoryPath) {
+            try {
+                const raw = (0, fs_1.readFileSync)(memoryPath, 'utf-8');
+                memoryEntries = countOccurrences(raw, '<!-- neurcode-memory-entry -->');
+            }
+            catch {
+                memoryEntries = null;
+            }
+        }
+        const architecturePath = (0, path_1.join)(scope.cwd, '.neurcode', 'architecture.json');
+        const architectureBytes = safeFileSize(architecturePath);
+        const brainDbPath = (0, plan_cache_1.getBrainDbPath)(scope.cwd);
+        const fallbackCachePath = (0, plan_cache_1.getBrainFallbackCachePath)(scope.cwd);
+        const brainPointerPath = (0, plan_cache_1.getBrainPointerPath)(scope.cwd);
+        const askCachePath = (0, ask_cache_1.getAskCachePath)(scope.cwd);
+        const brainDbBytes = (0, plan_cache_1.getBrainDbSizeBytes)(scope.cwd);
+        const askCacheBytes = safeFileSize(askCachePath);
+        const storageMode = (0, plan_cache_1.getBrainStorageMode)(scope.cwd);
+        const backend = (0, plan_cache_1.getBrainStoreBackend)(scope.cwd);
+        const activeStorePath = backend === 'sqlite' ? brainDbPath : fallbackCachePath;
+        const activeStoreExists = (0, fs_1.existsSync)(activeStorePath);
+        const activeStoreBytes = safeFileSize(activeStorePath);
+        const contextStats = (0, brain_context_1.getBrainContextStats)(scope.cwd, {
+            orgId: scope.orgId,
+            projectId: scope.projectId,
+        });
+        const payload = {
+            repoRoot: scope.cwd,
+            scope: {
+                orgId: scope.orgId,
+                orgName: scope.orgName,
+                projectId: scope.projectId,
+            },
+            planCache: {
+                totalEntries: allCached.length,
+                scopedEntries: scopedCached.length,
+            },
+            askCache: {
+                path: askCachePath,
+                exists: (0, fs_1.existsSync)(askCachePath),
+                bytes: askCacheBytes,
+                totalEntries: allAskCached.length,
+                scopedEntries: scopedAskCached.length,
+            },
+            brainStore: {
+                backend,
+                activeStorePath,
+                activeStoreExists,
+                activeStoreBytes,
+                dbPath: brainDbPath,
+                dbExists: (0, fs_1.existsSync)(brainDbPath),
+                dbBytes: brainDbBytes,
+                fallbackPath: fallbackCachePath,
+                fallbackExists: (0, fs_1.existsSync)(fallbackCachePath),
+                pointerPath: brainPointerPath,
+                pointerExists: (0, fs_1.existsSync)(brainPointerPath),
+                noCodeStorage: storageMode.noCodeStorage,
+                modeSource: storageMode.source,
+            },
+            contextIndex: contextStats,
+            memory: {
+                path: memoryPath,
+                exists: memoryExists,
+                bytes: memoryBytes,
+                entries: memoryEntries,
+            },
+            staticContext: {
+                hash: staticContext.hash,
+                sources: staticContext.sources,
+                bytes: Buffer.byteLength(staticContext.text || '', 'utf-8'),
+            },
+            architecture: {
+                path: architecturePath,
+                exists: (0, fs_1.existsSync)(architecturePath),
+                bytes: architectureBytes,
+            },
+        };
+        if (options.json) {
+            console.log(JSON.stringify(payload, null, 2));
+            return;
+        }
+        await (0, messages_1.printSuccessBanner)('Neurcode Brain Status');
+        (0, messages_1.printSection)('Scope', '🧠');
+        console.log(chalk.dim(`Repo Root: ${scope.cwd}`));
+        console.log(chalk.dim(`Org:      ${scope.orgName || scope.orgId || '(not set)'}`));
+        console.log(chalk.dim(`Project:  ${scope.projectId || '(not set)'}`));
+        if (!scope.orgId || !scope.projectId) {
+            (0, messages_1.printWarning)('Brain scope is not fully configured', 'Run: neurcode init  (to link this folder to an organization + project)');
+        }
+        (0, messages_1.printSection)('Brain Store', '🗄️');
+        console.log(chalk.dim(`Backend:          ${backend}`));
+        console.log(chalk.dim(`Active Store:     ${activeStorePath}`));
+        console.log(chalk.dim(`Store Exists:     ${activeStoreExists ? 'yes' : 'no'}`));
+        if (activeStoreBytes != null) {
+            console.log(chalk.dim(`Store Size:       ${formatBytes(activeStoreBytes)}`));
+        }
+        console.log(chalk.dim(`DB Path:          ${brainDbPath}`));
+        console.log(chalk.dim(`DB Exists:        ${(0, fs_1.existsSync)(brainDbPath) ? 'yes' : 'no'}`));
+        if (brainDbBytes != null) {
+            console.log(chalk.dim(`DB Size:          ${formatBytes(brainDbBytes)}`));
+        }
+        console.log(chalk.dim(`Fallback Path:    ${fallbackCachePath}`));
+        console.log(chalk.dim(`Fallback Exists:  ${(0, fs_1.existsSync)(fallbackCachePath) ? 'yes' : 'no'}`));
+        console.log(chalk.dim(`Pointer Path:     ${brainPointerPath}`));
+        console.log(chalk.dim(`Pointer Exists:   ${(0, fs_1.existsSync)(brainPointerPath) ? 'yes' : 'no'}`));
+        console.log(chalk.dim(`No-code-storage:  ${storageMode.noCodeStorage ? 'ON' : 'OFF'} (${storageMode.source})`));
+        (0, messages_1.printSection)('Context Index', '🧩');
+        console.log(chalk.dim(`Path:             ${contextStats.path}`));
+        console.log(chalk.dim(`Exists:           ${contextStats.exists ? 'yes' : 'no'}`));
+        console.log(chalk.dim(`Scopes:           ${contextStats.totalScopes}`));
+        console.log(chalk.dim(`Scope Active:     ${contextStats.scopeFound ? 'yes' : 'no'}`));
+        console.log(chalk.dim(`Indexed Files:    ${contextStats.fileEntries}`));
+        console.log(chalk.dim(`Progress Events:  ${contextStats.eventEntries}`));
+        if (contextStats.lastRefreshAt) {
+            console.log(chalk.dim(`Last Refresh:     ${new Date(contextStats.lastRefreshAt).toLocaleString()}`));
+        }
+        if (contextStats.lastUpdatedAt) {
+            console.log(chalk.dim(`Last Update:      ${new Date(contextStats.lastUpdatedAt).toLocaleString()}`));
+        }
+        (0, messages_1.printSection)('Plan Cache', '⚡');
+        console.log(chalk.dim(`Entries (repo):   ${allCached.length}`));
+        if (scope.orgId && scope.projectId) {
+            console.log(chalk.dim(`Entries (scope):  ${scopedCached.length}`));
+        }
+        console.log(chalk.dim(`Ask Cache Path:   ${askCachePath}`));
+        console.log(chalk.dim(`Ask Entries(repo): ${allAskCached.length}`));
+        if (scope.orgId && scope.projectId) {
+            console.log(chalk.dim(`Ask Entries(scope): ${scopedAskCached.length}`));
+        }
+        if (askCacheBytes != null) {
+            console.log(chalk.dim(`Ask Cache Size:   ${formatBytes(askCacheBytes)}`));
+        }
+        (0, messages_1.printSection)('Memory', '📝');
+        if (!memoryPath) {
+            console.log(chalk.dim('No org/project scope detected, so no memory file is active.'));
+        }
+        else if (!memoryExists) {
+            console.log(chalk.dim(`No memory found yet for this scope.`));
+            console.log(chalk.dim(`Path: ${memoryPath}`));
+        }
+        else {
+            console.log(chalk.dim(`Path:    ${memoryPath}`));
+            if (memoryBytes != null)
+                console.log(chalk.dim(`Size:    ${formatBytes(memoryBytes)}`));
+            if (memoryEntries != null)
+                console.log(chalk.dim(`Entries: ${memoryEntries}`));
+        }
+        (0, messages_1.printSection)('Static Context', '📎');
+        if (staticContext.sources.length === 0) {
+            console.log(chalk.dim('No context files found. Optional files: neurcode.md, .neurcode/context.md'));
+        }
+        else {
+            staticContext.sources.forEach((s) => {
+                console.log(chalk.dim(`- ${s.label}: ${s.path} (${formatBytes(s.bytes)}${s.truncated ? ', truncated' : ''})`));
+            });
+        }
+        (0, messages_1.printSection)('Knowledge', '🏗️');
+        if ((0, fs_1.existsSync)(architecturePath)) {
+            console.log(chalk.dim(`Architecture memory: ${architecturePath} (${formatBytes(architectureBytes || 0)})`));
+        }
+        else {
+            console.log(chalk.dim('Architecture memory not found yet (it will be created automatically on plan runs).'));
+        }
+    });
+    brain
+        .command('mode')
+        .description('Show or set Brain storage mode')
+        .option('--storage-mode <mode>', 'Set storage mode: full | no-code')
+        .option('--enable-no-code-storage', 'Enable no-code-storage mode')
+        .option('--disable-no-code-storage', 'Disable no-code-storage mode')
+        .option('--json', 'Output as JSON')
+        .action(async (options) => {
+        const scope = getBrainScope();
+        let requestedMode = null;
+        if (options.enableNoCodeStorage && options.disableNoCodeStorage) {
+            (0, messages_1.printError)('Conflicting flags', 'Use only one of: --enable-no-code-storage or --disable-no-code-storage');
+            process.exit(1);
+        }
+        if (options.enableNoCodeStorage)
+            requestedMode = true;
+        if (options.disableNoCodeStorage)
+            requestedMode = false;
+        if (typeof options.storageMode === 'string' && options.storageMode.trim()) {
+            const normalized = options.storageMode.trim().toLowerCase();
+            if (['no-code', 'no_code', 'no-code-storage', 'nocode', 'hashes'].includes(normalized)) {
+                requestedMode = true;
+            }
+            else if (['full', 'default', 'standard'].includes(normalized)) {
+                requestedMode = false;
+            }
+            else {
+                (0, messages_1.printError)('Invalid --storage-mode value', 'Use: full or no-code');
+                process.exit(1);
+            }
+        }
+        if (requestedMode !== null) {
+            (0, plan_cache_1.setNoCodeStorageMode)(scope.cwd, requestedMode);
+        }
+        const mode = (0, plan_cache_1.getBrainStorageMode)(scope.cwd);
+        const payload = {
+            repoRoot: scope.cwd,
+            noCodeStorage: mode.noCodeStorage,
+            source: mode.source,
+            envOverride: process.env.NEURCODE_BRAIN_NO_CODE_STORAGE || null,
+        };
+        if (options.json) {
+            console.log(JSON.stringify(payload, null, 2));
+            return;
+        }
+        await (0, messages_1.printSuccessBanner)('Neurcode Brain Mode');
+        console.log(chalk.dim(`Repo Root:        ${scope.cwd}`));
+        console.log(chalk.dim(`No-code-storage:  ${mode.noCodeStorage ? 'ON' : 'OFF'} (${mode.source})`));
+        if (process.env.NEURCODE_BRAIN_NO_CODE_STORAGE != null) {
+            (0, messages_1.printInfo)('Environment override detected', 'NEURCODE_BRAIN_NO_CODE_STORAGE is currently overriding persisted mode.');
+        }
+        if (requestedMode !== null) {
+            (0, messages_1.printSuccess)('Mode updated', `No-code-storage is now ${mode.noCodeStorage ? 'ON' : 'OFF'}`);
+        }
+        else {
+            (0, messages_1.printInfo)('Usage', [
+                'Set with: neurcode brain mode --enable-no-code-storage',
+                'Or: neurcode brain mode --disable-no-code-storage',
+                'Or: neurcode brain mode --storage-mode no-code|full',
+            ].join('\n'));
+        }
+    });
+    brain
+        .command('doctor')
+        .description('Diagnose Brain scope and explain plan cache hits/misses for an intent')
+        .argument('[intent...]', 'Intent to diagnose (if omitted, only prints scope checks)')
+        .option('--project-id <id>', 'Project ID override')
+        .option('--ticket <id>', 'Ticket reference (e.g., PROJ-123)')
+        .option('--issue <id>', 'GitHub issue number (affects cache key)')
+        .option('--pr <id>', 'GitHub PR number (affects cache key)')
+        .option('--json', 'Output as JSON')
+        .action(async (intentParts, options) => {
+        const intent = Array.isArray(intentParts) ? intentParts.join(' ').trim() : String(intentParts || '').trim();
+        const scope = getBrainScope(options.projectId);
+        const ticketRef = options.issue
+            ? `github_issue:${options.issue}`
+            : options.pr
+                ? `github_pr:${options.pr}`
+                : options.ticket
+                    ? `ticket:${options.ticket}`
+                    : undefined;
+        const problems = [];
+        if (!scope.orgId)
+            problems.push('Missing orgId (run neurcode init)');
+        if (!scope.projectId)
+            problems.push('Missing projectId (run neurcode init)');
+        const staticContext = (0, neurcode_context_1.loadStaticNeurcodeContext)(scope.cwd, scope.orgId && scope.projectId ? { orgId: scope.orgId, projectId: scope.projectId } : undefined);
+        const gitFingerprint = (0, plan_cache_1.getGitRepoFingerprint)(scope.cwd);
+        const fileTree = !gitFingerprint ? scanFiles(scope.cwd, scope.cwd, 400) : [];
+        const fsFingerprint = !gitFingerprint ? (0, plan_cache_1.getFilesystemFingerprintFromTree)(fileTree, scope.cwd) : null;
+        const repoFingerprint = gitFingerprint || fsFingerprint;
+        const normalized = intent ? (0, plan_cache_1.normalizeIntent)(intent) : '';
+        const backend = (0, plan_cache_1.getBrainStoreBackend)(scope.cwd);
+        const promptHash = normalized
+            ? (0, plan_cache_1.computePromptHash)({
+                intent: normalized,
+                ticketRef,
+                contextHash: staticContext.hash,
+            })
+            : null;
+        const policyVersionHash = (0, plan_cache_1.computePolicyVersionHash)(scope.cwd);
+        const neurcodeVersion = (0, plan_cache_1.getNeurcodeVersion)();
+        const canComputeKey = Boolean(intent && scope.orgId && scope.projectId && repoFingerprint);
+        const keyInput = canComputeKey
+            ? {
+                schemaVersion: 2,
+                orgId: scope.orgId,
+                projectId: scope.projectId,
+                promptHash: promptHash,
+                policyVersionHash,
+                neurcodeVersion,
+                repo: repoFingerprint,
+            }
+            : null;
+        const key = keyInput ? (0, plan_cache_1.computePlanCacheKey)(keyInput) : null;
+        const cached = key ? (0, plan_cache_1.peekCachedPlan)(scope.cwd, key) : null;
+        const similar = scope.orgId && scope.projectId && normalized
+            ? (0, plan_cache_1.findSimilarCachedPlans)(scope.cwd, {
+                orgId: scope.orgId,
+                projectId: scope.projectId,
+                repoIdentity: repoFingerprint?.repoIdentity,
+            }, normalized, 3)
+            : [];
+        const payload = {
+            repoRoot: scope.cwd,
+            scope: { orgId: scope.orgId, orgName: scope.orgName, projectId: scope.projectId },
+            problems,
+            cacheKey: key,
+            cacheHit: Boolean(cached),
+            keyInput,
+            backend,
+            repoFingerprint,
+            staticContext: { hash: staticContext.hash, sources: staticContext.sources },
+            similar: similar.map((s) => ({
+                createdAt: s.createdAt,
+                intent: s.input.intent,
+                planId: s.response.planId,
+                summary: s.response.plan.summary,
+            })),
+        };
+        if (options.json) {
+            console.log(JSON.stringify(payload, null, 2));
+            return;
+        }
+        await (0, messages_1.printSuccessBanner)('Neurcode Brain Doctor');
+        (0, messages_1.printSection)('Scope', '🧭');
+        console.log(chalk.dim(`Repo Root: ${scope.cwd}`));
+        console.log(chalk.dim(`Org:      ${scope.orgName || scope.orgId || '(not set)'}`));
+        console.log(chalk.dim(`Project:  ${scope.projectId || '(not set)'}`));
+        if (problems.length > 0) {
+            (0, messages_1.printWarning)('Scope issues detected', problems.join('\n   • '));
+        }
+        (0, messages_1.printSection)('Fingerprint', '🧬');
+        console.log(chalk.dim(`Cache backend: ${backend}`));
+        if (!repoFingerprint) {
+            (0, messages_1.printWarning)('No repo fingerprint available', 'Not a git repo and filesystem scan failed.');
+        }
+        else if (repoFingerprint.kind === 'git') {
+            console.log(chalk.dim(`Kind:       git`));
+            console.log(chalk.dim(`Repo:       ${repoFingerprint.repoIdentity}`));
+            console.log(chalk.dim(`HEAD:       ${repoFingerprint.headSha.substring(0, 12)}...`));
+            console.log(chalk.dim(`Tree:       ${repoFingerprint.headTreeSha.substring(0, 12)}...`));
+            console.log(chalk.dim(`WorkingHash: ${repoFingerprint.workingTreeHash.substring(0, 12)}...`));
+        }
+        else {
+            console.log(chalk.dim(`Kind:        filesystem`));
+            console.log(chalk.dim(`Repo:        ${repoFingerprint.repoIdentity}`));
+            console.log(chalk.dim(`TreeHash:    ${repoFingerprint.fileTreeHash.substring(0, 12)}...`));
+            console.log(chalk.dim(`Files seen:  ${fileTree.length}`));
+        }
+        (0, messages_1.printSection)('Context', '📎');
+        if (staticContext.sources.length === 0) {
+            console.log(chalk.dim('No context files found.'));
+        }
+        else {
+            staticContext.sources.forEach((s) => {
+                console.log(chalk.dim(`- ${s.label}: ${s.path}${s.truncated ? ' (truncated)' : ''}`));
+            });
+        }
+        console.log(chalk.dim(`ContextHash: ${staticContext.hash.substring(0, 12)}...`));
+        (0, messages_1.printSection)('Plan Cache', '⚡');
+        if (!intent) {
+            (0, messages_1.printInfo)('No intent provided', 'Run: neurcode brain doctor "<intent>"  to explain cache hit/miss');
+            return;
+        }
+        if (!scope.orgId || !scope.projectId) {
+            (0, messages_1.printError)('Cannot compute plan cache key', 'Missing orgId/projectId. Run: neurcode init');
+            return;
+        }
+        if (!repoFingerprint) {
+            (0, messages_1.printError)('Cannot compute plan cache key', 'No repo fingerprint available.');
+            return;
+        }
+        console.log(chalk.dim(`Intent (normalized): ${normalized}`));
+        if (ticketRef)
+            console.log(chalk.dim(`TicketRef:          ${ticketRef}`));
+        if (promptHash)
+            console.log(chalk.dim(`PromptHash:         ${promptHash.substring(0, 12)}...`));
+        console.log(chalk.dim(`PolicyHash:         ${policyVersionHash.substring(0, 12)}...`));
+        console.log(chalk.dim(`NeurcodeVersion:    ${neurcodeVersion}`));
+        console.log(chalk.dim(`CacheKey:           ${key?.substring(0, 16)}...`));
+        if (cached) {
+            (0, messages_1.printSuccess)('Cache hit', `Created: ${new Date(cached.createdAt).toLocaleString()} | Uses: ${cached.useCount || 1}`);
+        }
+        else {
+            (0, messages_1.printWarning)('Cache miss', 'This intent/repo snapshot has no cached plan yet.');
+        }
+        if (similar.length > 0) {
+            console.log('');
+            console.log(chalk.bold.white('Similar cached plans (same org/project):'));
+            similar.forEach((s, idx) => {
+                const summary = (s.response.plan.summary || '').trim().slice(0, 140);
+                console.log(chalk.dim(`  ${idx + 1}. intent="${s.input.intent}"`));
+                if (summary)
+                    console.log(chalk.dim(`     summary="${summary}${summary.length >= 140 ? '...' : ''}"`));
+            });
+        }
+    });
+    brain
+        .command('export')
+        .description('Export Brain context (static context + architecture + memory tail)')
+        .option('--project-id <id>', 'Project ID override')
+        .option('--format <format>', 'Output format: md | json | claude | cursor | copilot', 'md')
+        .option('--out <path>', 'Write output to a file (defaults to stdout)')
+        .option('--write', 'Write to the default file path for the chosen format (instead of stdout)')
+        .option('--overwrite', 'Overwrite existing output file when using --out/--write')
+        .action(async (options) => {
+        const scope = getBrainScope(options.projectId);
+        const staticContext = (0, neurcode_context_1.loadStaticNeurcodeContext)(scope.cwd, scope.orgId && scope.projectId ? { orgId: scope.orgId, projectId: scope.projectId } : undefined);
+        let architectureJson = null;
+        const architecturePath = (0, path_1.join)(scope.cwd, '.neurcode', 'architecture.json');
+        if ((0, fs_1.existsSync)(architecturePath)) {
+            try {
+                architectureJson = JSON.parse((0, fs_1.readFileSync)(architecturePath, 'utf-8'));
+            }
+            catch {
+                architectureJson = null;
+            }
+        }
+        const memoryTail = scope.orgId && scope.projectId ? (0, neurcode_context_1.loadOrgProjectMemoryTail)(scope.cwd, scope.orgId, scope.projectId) : '';
+        const allCached = (0, plan_cache_1.listCachedPlans)(scope.cwd);
+        const scopedEntries = scope.orgId && scope.projectId
+            ? allCached.filter((e) => e.input.orgId === scope.orgId && e.input.projectId === scope.projectId).length
+            : undefined;
+        const generatedAt = new Date().toISOString();
+        const format = String(options.format || 'md').toLowerCase();
+        const payload = {
+            generatedAt,
+            repoRoot: scope.cwd,
+            scope: {
+                orgId: scope.orgId,
+                orgName: scope.orgName,
+                projectId: scope.projectId,
+            },
+            planCache: {
+                totalEntries: allCached.length,
+                scopedEntries,
+            },
+            staticContext,
+            architecture: architectureJson,
+            memoryTail,
+        };
+        let output = '';
+        if (format === 'json') {
+            output = JSON.stringify(payload, null, 2) + '\n';
+        }
+        else if (format === 'claude' || format === 'cursor' || format === 'copilot') {
+            // Tool-friendly markdown. Users can redirect it to CLAUDE.md / .cursorrules / .github/copilot-instructions.md
+            output =
+                renderBrainExportMarkdown({
+                    generatedAt,
+                    cwd: scope.cwd,
+                    scope: payload.scope,
+                    staticContext,
+                    architectureJson,
+                    memoryTail,
+                    cacheStats: { totalEntries: allCached.length, scopedEntries },
+                }) +
+                    '\n' +
+                    [
+                        '## Tool Notes',
+                        format === 'claude'
+                            ? '- Save as: CLAUDE.md'
+                            : format === 'cursor'
+                                ? '- Save as: .cursorrules'
+                                : '- Save as: .github/copilot-instructions.md',
+                        '- Keep this file short. The best results come from clear invariants, boundaries, and conventions.',
+                        '',
+                    ].join('\n');
+        }
+        else {
+            output =
+                renderBrainExportMarkdown({
+                    generatedAt,
+                    cwd: scope.cwd,
+                    scope: payload.scope,
+                    staticContext,
+                    architectureJson,
+                    memoryTail,
+                    cacheStats: { totalEntries: allCached.length, scopedEntries },
+                }) + '\n';
+        }
+        const defaultOutPath = format === 'claude'
+            ? 'CLAUDE.md'
+            : format === 'cursor'
+                ? '.cursorrules'
+                : format === 'copilot'
+                    ? (0, path_1.join)('.github', 'copilot-instructions.md')
+                    : format === 'json'
+                        ? 'neurcode-brain.json'
+                        : 'neurcode-brain.md';
+        const outArg = options.out;
+        const writeFlag = Boolean(options.write);
+        const overwrite = Boolean(options.overwrite);
+        const outPathRaw = outArg || (writeFlag ? defaultOutPath : null);
+        if (outPathRaw) {
+            const outPath = (0, path_1.isAbsolute)(outPathRaw) ? outPathRaw : (0, path_1.join)(scope.cwd, outPathRaw);
+            const dir = (0, path_1.dirname)(outPath);
+            if (!(0, fs_1.existsSync)(dir))
+                (0, fs_1.mkdirSync)(dir, { recursive: true });
+            if ((0, fs_1.existsSync)(outPath) && !overwrite) {
+                (0, messages_1.printError)('Export file already exists', outPath, [
+                    'Pass --overwrite to replace it',
+                    'Or choose a different path with --out <path>',
+                ]);
+                process.exit(1);
+            }
+            (0, fs_1.writeFileSync)(outPath, output, 'utf-8');
+            (0, messages_1.printSuccess)('Brain export written', outPath);
+            return;
+        }
+        process.stdout.write(output);
+    });
+    brain
+        .command('graph [query...]')
+        .description('Query Team Memory Graph (architecture/files/events/authorship)')
+        .option('--project-id <id>', 'Project ID override')
+        .option('--module <pattern>', 'Focus on a module/path segment (e.g., auth, billing, packages/cli)')
+        .option('--days <n>', 'Lookback window for git authorship signals (default: 90)', (val) => parseInt(val, 10))
+        .option('--limit <n>', 'Maximum items to show per section (default: 8)', (val) => parseInt(val, 10))
+        .option('--json', 'Output as JSON')
+        .action((queryArg, options) => {
+        const scope = getBrainScope(options.projectId);
+        const query = Array.isArray(queryArg) ? queryArg.join(' ').trim() : (queryArg || '').trim();
+        const normalizedQuery = (0, plan_cache_1.normalizeIntent)(query);
+        const moduleFilter = (options.module || '').trim();
+        const limit = Number.isFinite(options.limit) ? Math.min(20, Math.max(1, options.limit)) : 8;
+        const sinceDays = Number.isFinite(options.days) ? Math.min(3650, Math.max(1, options.days)) : 90;
+        const stopWords = new Set([
+            'what', 'which', 'where', 'when', 'show', 'list', 'from', 'with', 'that', 'this',
+            'who', 'owner', 'owners', 'touched', 'touches', 'authored', 'recent', 'recently',
+            'last', 'quarter', 'month', 'months', 'week', 'weeks', 'days', 'during', 'before', 'after',
+        ]);
+        const scopeStore = loadTeamMemoryScopeStore(scope.cwd, scope) || {};
+        const scopedFilesRaw = Object.values(scopeStore.files || {}).map((entry) => ({
+            path: normalizeFsPath(entry.path || ''),
+            summary: entry.summary || '',
+            symbols: Array.isArray(entry.symbols) ? entry.symbols : [],
+            updatedAt: entry.updatedAt,
+            lastSeenAt: entry.lastSeenAt,
+        }))
+            .filter((entry) => Boolean(entry.path));
+        const scopedFiles = scopedFilesRaw.length > 0
+            ? scopedFilesRaw
+            : scanFiles(scope.cwd, scope.cwd, 300).map((path) => ({
+                path: normalizeFsPath(path),
+                summary: '',
+                symbols: [],
+                updatedAt: '',
+                lastSeenAt: '',
+            }));
+        const candidateTerms = (0, plan_cache_1.normalizeIntent)(`${moduleFilter} ${query}`)
+            .split(/\s+/)
+            .filter((term) => term.length >= 4)
+            .filter((term) => !stopWords.has(term));
+        const moduleMatcher = moduleFilter ? (0, plan_cache_1.normalizeIntent)(moduleFilter) : '';
+        const filteredFiles = scopedFiles.filter((entry) => {
+            const pathNorm = (0, plan_cache_1.normalizeIntent)(entry.path);
+            if (moduleMatcher && !pathNorm.includes(moduleMatcher))
+                return false;
+            if (candidateTerms.length === 0)
+                return true;
+            if (candidateTerms.some((term) => pathNorm.includes(term)))
+                return true;
+            const summaryNorm = (0, plan_cache_1.normalizeIntent)(entry.summary || '');
+            if (candidateTerms.some((term) => summaryNorm.includes(term)))
+                return true;
+            const symbolsNorm = (entry.symbols || []).map((s) => (0, plan_cache_1.normalizeIntent)(s)).join(' ');
+            return candidateTerms.some((term) => symbolsNorm.includes(term));
+        });
+        const focusFiles = filteredFiles.length > 0 ? filteredFiles : scopedFiles;
+        const moduleCounts = new Map();
+        for (const file of focusFiles) {
+            const module = inferModuleKey(file.path);
+            moduleCounts.set(module, (moduleCounts.get(module) || 0) + 1);
+        }
+        const topModules = rankTopEntries(moduleCounts.entries(), ([, count]) => count, limit)
+            .map(([module, fileCount]) => ({ module, fileCount }));
+        const { authorTouches, fileTouches } = collectGitAuthorship(scope.cwd, sinceDays);
+        const focusPathSet = new Set(focusFiles.map((file) => file.path));
+        const focusAuthorTouches = new Map();
+        for (const [path, byAuthor] of fileTouches.entries()) {
+            if (!focusPathSet.has(path))
+                continue;
+            for (const [author, count] of byAuthor.entries()) {
+                focusAuthorTouches.set(author, (focusAuthorTouches.get(author) || 0) + count);
+            }
+        }
+        const effectiveAuthorTouches = focusAuthorTouches.size > 0 ? focusAuthorTouches : authorTouches;
+        const topContributors = rankTopEntries(effectiveAuthorTouches.entries(), ([, count]) => count, limit)
+            .map(([author, touches]) => ({ author, touches }));
+        const events = Array.isArray(scopeStore.events) ? scopeStore.events : [];
+        const recentDecisions = [...events]
+            .sort((a, b) => sortIsoDesc(a.timestamp, b.timestamp))
+            .slice(0, Math.max(limit, 12))
+            .map((event) => ({
+            timestamp: event.timestamp || null,
+            type: event.type || null,
+            planId: event.planId || null,
+            verdict: event.verdict || null,
+            note: event.note || null,
+            filePath: event.filePath || null,
+        }));
+        const scoredFiles = focusFiles.map((file) => {
+            const pathNorm = (0, plan_cache_1.normalizeIntent)(file.path);
+            const summaryNorm = (0, plan_cache_1.normalizeIntent)(file.summary || '');
+            const symbolNorm = (file.symbols || []).map((s) => (0, plan_cache_1.normalizeIntent)(s)).join(' ');
+            let score = 0;
+            if (candidateTerms.length > 0) {
+                for (const term of candidateTerms) {
+                    if (pathNorm.includes(term))
+                        score += 1.6;
+                    if (summaryNorm.includes(term))
+                        score += 1.1;
+                    if (symbolNorm.includes(term))
+                        score += 0.9;
+                }
+            }
+            else {
+                score += 0.5;
+            }
+            const recentBoost = Math.max(0, (Date.parse(file.lastSeenAt || file.updatedAt || '') || 0) / 1e13);
+            score += recentBoost;
+            return { ...file, score };
+        });
+        scoredFiles.sort((a, b) => {
+            if (b.score !== a.score)
+                return b.score - a.score;
+            return sortIsoDesc(a.lastSeenAt || a.updatedAt, b.lastSeenAt || b.updatedAt);
+        });
+        const topFiles = scoredFiles.slice(0, limit).map((file) => {
+            const contributors = fileTouches.get(file.path);
+            const topOwners = contributors
+                ? rankTopEntries(contributors.entries(), ([, count]) => count, 3).map(([author, touches]) => ({ author, touches }))
+                : [];
+            return {
+                path: file.path,
+                module: inferModuleKey(file.path),
+                summary: file.summary || null,
+                symbols: (file.symbols || []).slice(0, 10),
+                lastSeenAt: file.lastSeenAt || null,
+                updatedAt: file.updatedAt || null,
+                topOwners,
+            };
+        });
+        const asksWho = /\b(who|owner|owners|authored|touched)\b/.test(normalizedQuery);
+        const asksWhy = /\b(why|purpose|exists|exist)\b/.test(normalizedQuery);
+        let answer = '';
+        if (asksWho) {
+            const targetLabel = moduleFilter
+                ? `module filter "${moduleFilter}"`
+                : candidateTerms.length > 0
+                    ? `files matching "${candidateTerms.slice(0, 3).join(', ')}"`
+                    : 'this scope';
+            if (topContributors.length > 0) {
+                answer = `Top contributors for ${targetLabel} over the last ${sinceDays} day(s): ${topContributors
+                    .slice(0, 5)
+                    .map((item) => `${item.author} (${item.touches})`)
+                    .join(', ')}.`;
+            }
+            else {
+                answer = `No git authorship evidence found for ${targetLabel} in the last ${sinceDays} day(s).`;
+            }
+        }
+        else if (asksWhy) {
+            const rationale = topFiles
+                .filter((file) => file.summary && file.summary.trim().length > 0)
+                .slice(0, 3)
+                .map((file) => `${file.path}: ${file.summary}`)
+                .join(' ');
+            answer = rationale || 'No explicit rationale summaries were found yet. Run `neurcode plan`/`neurcode ask`/`neurcode watch` to enrich memory.';
+        }
+        else {
+            answer = `Team Memory Graph indexed ${scopedFiles.length} file context entries and ${events.length} recent decision event(s).`;
+        }
+        const payload = {
+            generatedAt: new Date().toISOString(),
+            scope: {
+                orgId: scope.orgId,
+                orgName: scope.orgName,
+                projectId: scope.projectId,
+                cwd: scope.cwd,
+            },
+            query: query || null,
+            moduleFilter: moduleFilter || null,
+            sinceDays,
+            indexedFiles: scopedFiles.length,
+            indexedEvents: events.length,
+            answer,
+            topModules,
+            topContributors,
+            recentDecisions,
+            topFiles,
+        };
+        if (options.json) {
+            console.log(JSON.stringify(payload, null, 2));
+            return;
+        }
+        console.log(chalk.bold('\n🧠 Team Memory Graph\n'));
+        if (!scope.orgId || !scope.projectId) {
+            console.log(chalk.yellow('⚠️  Running in repo-fallback mode (org/project scope not initialized).'));
+        }
+        console.log(chalk.dim(`Scope: ${scope.orgName || scope.orgId || 'repo'} / ${scope.projectId || 'repo-fallback'}`));
+        console.log(chalk.dim(`Indexed files: ${scopedFiles.length} | Decision events: ${events.length}`));
+        if (query) {
+            console.log(chalk.white(`\nQuery: ${query}`));
+        }
+        console.log(chalk.white(`Answer: ${answer}\n`));
+        if (topModules.length > 0) {
+            console.log(chalk.bold.white('Top Modules'));
+            topModules.forEach((module, idx) => {
+                console.log(chalk.dim(`  ${idx + 1}. ${module.module} (${module.fileCount} file context entries)`));
+            });
+            console.log('');
+        }
+        if (topContributors.length > 0) {
+            console.log(chalk.bold.white(`Top Contributors (last ${sinceDays} day(s))`));
+            topContributors.forEach((author, idx) => {
+                console.log(chalk.dim(`  ${idx + 1}. ${author.author} (${author.touches} touches)`));
+            });
+            console.log('');
+        }
+        if (topFiles.length > 0) {
+            console.log(chalk.bold.white('High-Signal Files'));
+            topFiles.forEach((file, idx) => {
+                const summary = file.summary ? ` - ${file.summary}` : '';
+                console.log(chalk.dim(`  ${idx + 1}. ${file.path}${summary}`));
+            });
+        }
+    });
+    brain
+        .command('clear')
+        .description('Clear local Brain data (plan cache + memory) for the selected scope')
+        .option('--scope <scope>', 'Scope: project | org | repo', 'project')
+        .option('--project-id <id>', 'Project ID override (affects project scope)')
+        .option('--yes', 'Skip confirmation prompt')
+        .option('--dry-run', 'Show what would be deleted without deleting')
+        .action(async (options) => {
+        const scopeMode = String(options.scope || 'project').toLowerCase();
+        const brainScope = getBrainScope(options.projectId);
+        if (scopeMode === 'project' && (!brainScope.orgId || !brainScope.projectId)) {
+            (0, messages_1.printError)('Cannot clear project-scoped Brain data', 'Missing orgId/projectId. Run: neurcode init');
+            process.exit(1);
+        }
+        if (scopeMode === 'org' && !brainScope.orgId) {
+            (0, messages_1.printError)('Cannot clear org-scoped Brain data', 'Missing orgId. Run: neurcode init');
+            process.exit(1);
+        }
+        if (!['project', 'org', 'repo'].includes(scopeMode)) {
+            (0, messages_1.printError)('Invalid --scope', `Expected one of: project, org, repo. Got: ${scopeMode}`);
+            process.exit(1);
+        }
+        const scopeLabel = scopeMode === 'repo'
+            ? 'this repo'
+            : scopeMode === 'org'
+                ? `org ${brainScope.orgName || brainScope.orgId}`
+                : `org ${brainScope.orgName || brainScope.orgId} / project ${brainScope.projectId}`;
+        const brainDbPath = (0, plan_cache_1.getBrainDbPath)(brainScope.cwd);
+        const fallbackCachePath = (0, plan_cache_1.getBrainFallbackCachePath)(brainScope.cwd);
+        const brainPointerPath = (0, plan_cache_1.getBrainPointerPath)(brainScope.cwd);
+        const askCachePath = (0, ask_cache_1.getAskCachePath)(brainScope.cwd);
+        const contextIndexPath = (0, brain_context_1.getBrainContextPath)(brainScope.cwd);
+        const cacheBackend = (0, plan_cache_1.getBrainStoreBackend)(brainScope.cwd);
+        const activeCachePath = cacheBackend === 'sqlite' ? brainDbPath : fallbackCachePath;
+        const orgsDir = (0, path_1.join)(brainScope.cwd, '.neurcode', 'orgs');
+        const orgDir = brainScope.orgId ? (0, path_1.join)(orgsDir, brainScope.orgId) : null;
+        const orgProjectDir = brainScope.orgId && brainScope.projectId ? (0, neurcode_context_1.getOrgProjectDir)(brainScope.cwd, brainScope.orgId, brainScope.projectId) : null;
+        const plannedDeletes = [];
+        // Plan cache deletions
+        plannedDeletes.push({ kind: `brain-cache-entries (${cacheBackend})`, path: activeCachePath });
+        plannedDeletes.push({ kind: `ask-cache-entries (${scopeMode})`, path: askCachePath });
+        plannedDeletes.push({ kind: `context-index-entries (${scopeMode})`, path: contextIndexPath });
+        if (scopeMode === 'repo') {
+            if ((0, fs_1.existsSync)(brainDbPath)) {
+                plannedDeletes.push({ kind: 'brain-db-file', path: brainDbPath });
+            }
+            if ((0, fs_1.existsSync)(fallbackCachePath)) {
+                plannedDeletes.push({ kind: 'brain-fallback-file', path: fallbackCachePath });
+            }
+            if ((0, fs_1.existsSync)(contextIndexPath)) {
+                plannedDeletes.push({ kind: 'context-index-file', path: contextIndexPath });
+            }
+            if ((0, fs_1.existsSync)(askCachePath)) {
+                plannedDeletes.push({ kind: 'ask-cache-file', path: askCachePath });
+            }
+            plannedDeletes.push({ kind: 'brain-pointer', path: brainPointerPath });
+        }
+        // Memory/context directories
+        if (scopeMode === 'repo') {
+            plannedDeletes.push({ kind: 'org-memory', path: orgsDir });
+        }
+        else if (scopeMode === 'org' && orgDir) {
+            plannedDeletes.push({ kind: 'org-memory', path: orgDir });
+        }
+        else if (scopeMode === 'project' && orgProjectDir) {
+            plannedDeletes.push({ kind: 'project-memory', path: orgProjectDir });
+        }
+        if (!options.yes && process.stdout.isTTY && !process.env.CI) {
+            await (0, messages_1.printSuccessBanner)('Neurcode Brain Clear');
+            (0, messages_1.printWarning)('Destructive action', `This will delete Brain data for ${scopeLabel}.`);
+            console.log(chalk.bold.white('\nThis will affect:'));
+            plannedDeletes.forEach((d) => console.log(chalk.dim(`  - ${d.kind}: ${d.path}`)));
+            const { createInterface } = await Promise.resolve().then(() => __importStar(require('readline/promises')));
+            const { stdin, stdout } = await Promise.resolve().then(() => __importStar(require('process')));
+            const rl = createInterface({ input: stdin, output: stdout });
+            const ans = await rl.question(chalk.bold('\nContinue? (y/n): '));
+            rl.close();
+            if (!['y', 'yes'].includes(ans.trim().toLowerCase())) {
+                (0, messages_1.printInfo)('Aborted', 'No changes were made.');
+                return;
+            }
+        }
+        if (options.dryRun) {
+            await (0, messages_1.printSuccessBanner)('Dry Run');
+            plannedDeletes.forEach((d) => console.log(chalk.dim(`Would delete ${d.kind}: ${d.path}`)));
+            return;
+        }
+        // 1) Delete plan cache entries based on scope
+        if (scopeMode === 'repo') {
+            (0, plan_cache_1.deleteCachedPlans)(brainScope.cwd, () => true);
+            (0, ask_cache_1.deleteCachedAsks)(brainScope.cwd, () => true);
+        }
+        else if (scopeMode === 'org' && brainScope.orgId) {
+            (0, plan_cache_1.deleteCachedPlans)(brainScope.cwd, (e) => e.input.orgId === brainScope.orgId);
+            (0, ask_cache_1.deleteCachedAsks)(brainScope.cwd, (e) => e.input.orgId === brainScope.orgId);
+        }
+        else if (scopeMode === 'project' && brainScope.orgId && brainScope.projectId) {
+            (0, plan_cache_1.deleteCachedPlans)(brainScope.cwd, (e) => e.input.orgId === brainScope.orgId && e.input.projectId === brainScope.projectId);
+            (0, ask_cache_1.deleteCachedAsks)(brainScope.cwd, (e) => e.input.orgId === brainScope.orgId && e.input.projectId === brainScope.projectId);
+        }
+        (0, brain_context_1.clearBrainContext)(brainScope.cwd, scopeMode, {
+            orgId: brainScope.orgId,
+            projectId: brainScope.projectId,
+        });
+        if (scopeMode === 'repo') {
+            try {
+                (0, plan_cache_1.closeBrainStore)(brainScope.cwd);
+                if ((0, fs_1.existsSync)(brainDbPath)) {
+                    (0, fs_1.rmSync)(brainDbPath, { force: true });
+                }
+                if ((0, fs_1.existsSync)(fallbackCachePath)) {
+                    (0, fs_1.rmSync)(fallbackCachePath, { force: true });
+                }
+                if ((0, fs_1.existsSync)(contextIndexPath)) {
+                    (0, fs_1.rmSync)(contextIndexPath, { force: true });
+                }
+                if ((0, fs_1.existsSync)(askCachePath)) {
+                    (0, fs_1.rmSync)(askCachePath, { force: true });
+                }
+                if ((0, fs_1.existsSync)(brainPointerPath)) {
+                    (0, fs_1.rmSync)(brainPointerPath, { force: true });
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+        // 2) Delete memory directories (local-only)
+        try {
+            const pathToRemove = scopeMode === 'repo' ? orgsDir : scopeMode === 'org' ? orgDir : orgProjectDir;
+            if (pathToRemove && (0, fs_1.existsSync)(pathToRemove)) {
+                (0, fs_1.rmSync)(pathToRemove, { recursive: true, force: true });
+            }
+        }
+        catch {
+            // ignore
+        }
+        (0, messages_1.printSuccess)('Brain cleared', `Scope: ${scopeLabel}`);
+    });
+}
+//# sourceMappingURL=brain.js.map

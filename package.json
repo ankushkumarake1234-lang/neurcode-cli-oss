@@ -1,0 +1,17 @@
+{
+  "name": "neurcode-cli-oss",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Sanitized public Neurcode CLI snapshot.",
+  "scripts": {
+    "oss:check": "node scripts/oss-safety-check.mjs",
+    "oss:check:boundary": "node scripts/oss-export-boundary-check.mjs . --profile=cli",
+    "cli:help": "node packages/cli/dist/index.js --help"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
