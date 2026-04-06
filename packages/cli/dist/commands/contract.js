@@ -122,7 +122,9 @@ function discoverAgentPlanFile(projectRoot, options) {
         generic: ['.neurcode/import', '.claude/plans', '.cursor/plans', '.codex/plans'],
     };
     const defaultRoots = providerRoots[provider] || providerRoots.generic;
-    const roots = [...explicitRoots, ...defaultRoots.map((entry) => (0, path_1.resolve)(projectRoot, entry))];
+    const roots = explicitRoots.length > 0
+        ? explicitRoots
+        : defaultRoots.map((entry) => (0, path_1.resolve)(projectRoot, entry));
     const candidates = [];
     for (const root of roots) {
         if (!(0, fs_1.existsSync)(root)) {
@@ -171,11 +173,13 @@ async function resolveImportPayload(projectRoot, options) {
             return {
                 source: 'file',
                 planJson: parsed,
+                sourcePath: inputPath,
             };
         }
         return {
             source: 'file',
             planText: raw,
+            sourcePath: inputPath,
         };
     }
     if (options.autoDetect || (options.agentPath && options.agentPath.trim())) {
@@ -187,11 +191,13 @@ async function resolveImportPayload(projectRoot, options) {
                 return {
                     source: 'agent_auto',
                     planJson: parsed,
+                    sourcePath: detectedFile,
                 };
             }
             return {
                 source: 'agent_auto',
                 planText: raw,
+                sourcePath: detectedFile,
             };
         }
         if (options.autoDetect || (options.agentPath && options.agentPath.trim())) {
@@ -293,6 +299,7 @@ function contractCommand(program) {
                     projectId: options.projectId || null,
                     parseMode: response.parseMode,
                     importedFiles: response.importedFiles,
+                    sourcePath: payload.sourcePath || null,
                     warnings: response.warnings || [],
                     changeContract: changeContractPayload,
                     message: response.message,
@@ -304,6 +311,12 @@ function contractCommand(program) {
             console.log(chalk.bold.cyan('\n📥 Neurcode Contract Import\n'));
             if (payload.source === 'agent_auto') {
                 console.log(chalk.dim('Import source: auto-detected agent artifact'));
+                if (payload.sourcePath) {
+                    console.log(chalk.dim(`Detected file: ${payload.sourcePath}`));
+                }
+            }
+            else if (payload.source === 'file' && payload.sourcePath) {
+                console.log(chalk.dim(`Import source file: ${payload.sourcePath}`));
             }
             console.log(chalk.dim(`Provider: ${response.provider}`));
             console.log(chalk.dim(`Parse mode: ${response.parseMode}`));
@@ -338,6 +351,7 @@ function contractCommand(program) {
                     projectId: options.projectId || null,
                     parseMode: null,
                     importedFiles: 0,
+                    sourcePath: null,
                     warnings: [],
                     changeContract: null,
                     message,

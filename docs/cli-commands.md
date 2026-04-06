@@ -133,11 +133,19 @@ neurcode check --staged
 neurcode map
 neurcode plan-slo status --json
 neurcode doctor
+neurcode doctor --json
 ```
+
+`neurcode doctor` now validates enterprise-readiness signals end-to-end:
+- API health + runtime compatibility contract handshake
+- Dashboard notifications stream CORS preflight
+- Repo binding (`.neurcode/config.json`) and auth state
+- Deterministic artifacts (`neurcode.policy.lock.json`, `neurcode.policy.compiled.json`, `.neurcode/change-contract.json`, `.neurcode/runtime-guard.json`)
 
 ## High-Value Flags
 
 - `plan`: `--ticket`, `--issue`, `--pr`, `--force-plan`, `--no-cache`
+- `doctor`: `--json` (machine-readable diagnostics for CI/onboarding automation)
 - `ask`: `--json`, `--verbose`, `--max-citations`, `--no-cache`
 - `ask`: `--proof` (concise answer + evidence digest)
 - `simulate`: `--staged`, `--head`, `--base`, `--max-impacted`, `--depth`, `--json`
