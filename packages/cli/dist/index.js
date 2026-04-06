@@ -238,9 +238,13 @@ program
 });
 program
     .command('doctor')
-    .description('Health check & connectivity diagnostics - verify API connectivity')
-    .action(() => {
-    (0, doctor_1.doctorCommand)();
+    .description('Enterprise readiness diagnostics (config, artifacts, API compatibility, CORS)')
+    .option('--json', 'Output machine-readable diagnostics JSON')
+    .action((options) => {
+    (0, doctor_1.doctorCommand)({
+        json: options.json,
+        cliVersion: version,
+    });
 });
 program
     .command('compat')
