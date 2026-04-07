@@ -17,10 +17,16 @@ neurcode --version
 neurcode login
 neurcode init
 
-neurcode plan "Add org-level RBAC"
-neurcode policy compile --intent "No auth bypass, no secret literals" --require-deterministic-match
-neurcode prompt
+neurcode bootstrap --pack soc2 --auto-detect
+neurcode contract import --provider codex --auto-detect --no-confirm
+neurcode prompt "Implement role-based access control for org members"
 neurcode verify --record --compiled-policy neurcode.policy.compiled.json --enforce-change-contract --require-signed-artifacts
+```
+
+To preview possible auto-detected plans before import:
+
+```bash
+neurcode contract import --provider codex --auto-detect --list-candidates --json
 ```
 
 ## Read-only Q&A
