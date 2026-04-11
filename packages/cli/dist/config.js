@@ -8,8 +8,10 @@ exports.saveGlobalAuth = saveGlobalAuth;
 exports.getGlobalAuthPath = getGlobalAuthPath;
 exports.deleteGlobalAuth = deleteGlobalAuth;
 exports.deleteApiKeyFromAllSources = deleteApiKeyFromAllSources;
+exports.getOrCreateLocalGovernanceSigningMaterial = getOrCreateLocalGovernanceSigningMaterial;
 const fs_1 = require("fs");
 const path_1 = require("path");
+const crypto_1 = require("crypto");
 const state_1 = require("./utils/state");
 const project_root_1 = require("./utils/project-root");
 /**
@@ -92,6 +94,52 @@ function writeGlobalAuthFile(data) {
     catch {
         // Ignore
     }
+}
+/**
+ * Resolve a local governance signing key from ~/.neurcoderc.
+ * If authenticated and no key exists, auto-provision one for smoother
+ * login-first onboarding in orgs that require signed AI logs.
+ */
+function getOrCreateLocalGovernanceSigningMaterial(options) {
+    const autoProvision = options?.autoProvision !== false;
+    const global = readGlobalAuthFile();
+    if (!global)
+        return null;
+    const cfg = global.data || {};
+    const persistedKey = typeof cfg.governanceSigningKey === 'string'
+        ? cfg.governanceSigningKey.trim()
+        : '';
+    let persistedKeyId = typeof cfg.governanceSigningKeyId === 'string'
+        ? cfg.governanceSigningKeyId.trim()
+        : '';
+    if (persistedKey) {
+        if (!persistedKeyId) {
+            persistedKeyId = `local-${Date.now().toString(36)}`;
+            cfg.governanceSigningKeyId = persistedKeyId;
+            writeGlobalAuthFile(cfg);
+        }
+        return {
+            signingKey: persistedKey,
+            signingKeyId: persistedKeyId,
+            source: 'persisted',
+        };
+    }
+    if (!autoProvision)
+        return null;
+    const hasApiAuthMaterial = Boolean((cfg.apiKey || '').trim())
+        || Object.keys(cfg.apiKeysByOrg || {}).length > 0;
+    if (!hasApiAuthMaterial)
+        return null;
+    const signingKey = (0, crypto_1.randomBytes)(32).toString('hex');
+    const signingKeyId = `local-${Date.now().toString(36)}`;
+    cfg.governanceSigningKey = signingKey;
+    cfg.governanceSigningKeyId = signingKeyId;
+    writeGlobalAuthFile(cfg);
+    return {
+        signingKey,
+        signingKeyId,
+        source: 'generated',
+    };
 }
 function pickApiKeyFromKeyring(globalCfg, desiredOrgId) {
     const keyring = globalCfg.apiKeysByOrg || {};

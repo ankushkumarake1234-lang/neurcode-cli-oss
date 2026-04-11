@@ -6,6 +6,7 @@ exports.computeGovernanceArtifactPayloadHash = computeGovernanceArtifactPayloadH
 exports.signGovernanceArtifact = signGovernanceArtifact;
 exports.verifyGovernanceArtifactSignature = verifyGovernanceArtifactSignature;
 const crypto_1 = require("crypto");
+const config_1 = require("../config");
 function normalizeForHash(value) {
     if (value === null || typeof value !== 'object') {
         return value;
@@ -96,12 +97,32 @@ function parseSigningKeyRing(raw) {
     }
     return out;
 }
+function isEnabledFlag(value) {
+    if (!value)
+        return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
 function resolveGovernanceArtifactSigningConfigFromEnv() {
     const signingKeys = parseSigningKeyRing(process.env.NEURCODE_GOVERNANCE_SIGNING_KEYS);
     const singleSigningKey = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY?.trim() ||
         process.env.NEURCODE_AI_LOG_SIGNING_KEY?.trim() ||
         '';
     let signingKeyId = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY_ID?.trim() || null;
+    // Auto-provision a local signing key for authenticated users unless explicitly disabled.
+    // This keeps login-first onboarding smooth in orgs that enforce signed AI logs.
+    const disableLocalProvision = isEnabledFlag(process.env.NEURCODE_DISABLE_LOCAL_GOVERNANCE_SIGNING_KEY);
+    if (!disableLocalProvision) {
+        const localSigning = (0, config_1.getOrCreateLocalGovernanceSigningMaterial)();
+        if (localSigning) {
+            if (!signingKeys[localSigning.signingKeyId]) {
+                signingKeys[localSigning.signingKeyId] = localSigning.signingKey;
+            }
+            if (!signingKeyId) {
+                signingKeyId = localSigning.signingKeyId;
+            }
+        }
+    }
     if (singleSigningKey) {
         return {
             signingKey: singleSigningKey,

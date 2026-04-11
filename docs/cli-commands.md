@@ -17,6 +17,7 @@ neurcode start
 ## Primary Workflow (Recommended)
 
 ```bash
+neurcode login
 neurcode init
 neurcode policy compile --intent "No auth bypass, no secret literals" --require-deterministic-match
 neurcode plan "Add org-level RBAC" --ticket NEU-123
@@ -26,6 +27,12 @@ neurcode ship "Harden auth middleware" --max-fix-attempts 3 --test-command "pnpm
 ```
 
 `neurcode start` prints this guided flow and optional next steps.
+
+Run these commands from inside a git repository. If needed:
+
+```bash
+git init && git add . && git commit -m "chore: baseline"
+```
 
 ## Identity and Scope
 

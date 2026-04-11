@@ -37,22 +37,29 @@ node packages/cli/dist/index.js policy --help
 node packages/cli/dist/index.js verify --help
 ```
 
-## 4) Local governance-first demo (no login required)
+## 4) Login + policy-first demo (recommended)
 
 In any git repo:
 
 ```bash
+neurcode login
+neurcode init
 neurcode policy install soc2
-neurcode policy lock --no-dashboard
-neurcode policy compile --no-dashboard --intent "Do not use console.log; Do not use TODO"
+neurcode policy compile --intent "Do not use console.log; Do not use TODO"
 neurcode verify --policy-only
 ```
 
-## 5) Cloud-assisted flow (requires account/login)
+If this folder is not yet a git repository, run:
 
 ```bash
-neurcode login
-neurcode init
+git init
+git add .
+git commit -m "chore: baseline"
+```
+
+## 5) Plan-enforced flow
+
+```bash
 neurcode plan "Implement role-based access"
 neurcode prompt
 neurcode verify --record --compiled-policy neurcode.policy.compiled.json --enforce-change-contract
@@ -64,4 +71,3 @@ neurcode verify --record --compiled-policy neurcode.policy.compiled.json --enfor
 neurcode contract import --provider codex --auto-detect --list-candidates --json
 neurcode contract import --provider codex --auto-detect --no-confirm
 ```
-

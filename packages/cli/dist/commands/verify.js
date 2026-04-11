@@ -796,30 +796,28 @@ function parseSigningKeyRing(raw) {
     return out;
 }
 function resolveGovernanceSigningConfig() {
-    const signingKeys = parseSigningKeyRing(process.env.NEURCODE_GOVERNANCE_SIGNING_KEYS);
-    const envSigningKey = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY?.trim() ||
-        process.env.NEURCODE_AI_LOG_SIGNING_KEY?.trim() ||
-        '';
-    const requestedKeyId = process.env.NEURCODE_GOVERNANCE_SIGNING_KEY_ID?.trim() || '';
+    const artifactSigningConfig = (0, artifact_signature_1.resolveGovernanceArtifactSigningConfigFromEnv)();
     const signer = process.env.NEURCODE_GOVERNANCE_SIGNER || process.env.USER || 'neurcode-cli';
-    let signingKey = envSigningKey || null;
-    let signingKeyId = requestedKeyId || null;
-    if (!signingKey && Object.keys(signingKeys).length > 0) {
-        if (signingKeyId && signingKeys[signingKeyId]) {
-            signingKey = signingKeys[signingKeyId];
-        }
-        else {
-            const fallbackKeyId = Object.keys(signingKeys).sort((a, b) => a.localeCompare(b))[0];
-            signingKey = signingKeys[fallbackKeyId];
-            signingKeyId = signingKeyId || fallbackKeyId;
-        }
-    }
     return {
-        signingKey,
-        signingKeyId,
-        signingKeys,
+        signingKey: artifactSigningConfig.signingKey,
+        signingKeyId: artifactSigningConfig.signingKeyId,
+        signingKeys: artifactSigningConfig.signingKeys,
         signer,
     };
+}
+function isGitRepository(cwd) {
+    try {
+        const output = (0, child_process_1.execSync)('git rev-parse --is-inside-work-tree', {
+            cwd,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: 1024 * 1024,
+        }).trim().toLowerCase();
+        return output === 'true';
+    }
+    catch {
+        return false;
+    }
 }
 function isSignedAiLogsRequired(orgGovernanceSettings) {
     return (orgGovernanceSettings?.requireSignedAiLogs === true ||
@@ -1525,6 +1523,40 @@ async function verifyCommand(options) {
             };
             console.log(JSON.stringify(jsonPayload, null, 2));
         };
+        if (!isGitRepository(projectRoot)) {
+            const message = 'Verify requires a git repository. Initialize git (`git init`) or run this command inside an existing git project.';
+            if (options.json) {
+                emitVerifyJson({
+                    grade: 'F',
+                    score: 0,
+                    verdict: 'FAIL',
+                    violations: [
+                        {
+                            file: '.',
+                            rule: 'git_repository_required',
+                            severity: 'block',
+                            message,
+                        },
+                    ],
+                    adherenceScore: 0,
+                    bloatCount: 0,
+                    bloatFiles: [],
+                    plannedFilesModified: 0,
+                    totalPlannedFiles: 0,
+                    message,
+                    scopeGuardPassed: false,
+                    mode: 'git_repository_required',
+                    policyOnly: options.policyOnly === true,
+                });
+            }
+            else {
+                console.log(chalk.red('\n❌ Git Repository Required'));
+                console.log(chalk.red(`   ${message}`));
+                console.log(chalk.dim(`   Current path: ${projectRoot}`));
+                console.log(chalk.dim('   Next step: git init && git add . && git commit -m "chore: baseline"\n'));
+            }
+            process.exit(1);
+        }
         const enforceChangeContract = options.enforceChangeContract === true ||
             isEnabledFlag(process.env.NEURCODE_VERIFY_ENFORCE_CHANGE_CONTRACT);
         const explicitStrictArtifactMode = options.strictArtifacts === true ||
@@ -1972,7 +2004,7 @@ async function verifyCommand(options) {
         // Determine which diff to capture (staged + unstaged for full current work)
         let diffText;
         if (options.staged) {
-            diffText = (0, child_process_1.execSync)('git diff --staged', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
+            diffText = (0, child_process_1.execSync)('git diff --cached', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
         }
         else if (options.base) {
             diffText = (0, git_1.getDiffFromBase)(options.base);
@@ -1983,7 +2015,7 @@ async function verifyCommand(options) {
         else {
             // Default: combine staged + unstaged to capture all current work
             try {
-                const stagedDiff = (0, child_process_1.execSync)('git diff --staged', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
+                const stagedDiff = (0, child_process_1.execSync)('git diff --cached', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
                 const unstagedDiff = (0, child_process_1.execSync)('git diff', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
                 diffText = stagedDiff + (stagedDiff && unstagedDiff ? '\n' : '') + unstagedDiff;
             }

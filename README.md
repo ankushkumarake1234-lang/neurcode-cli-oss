@@ -51,27 +51,42 @@ node packages/cli/dist/index.js --help
 
 ## CLI workflow modes
 
-### 1) Local governance mode (best for workshops / no login required)
-
-```bash
-neurcode policy install soc2
-neurcode policy lock --no-dashboard
-neurcode policy compile --no-dashboard --intent "Do not use console.log; Do not use TODO"
-neurcode verify --policy-only
-```
-
-Use this for deterministic local policy checks during onboarding sessions.
-
-### 2) Cloud-assisted plan mode (requires login/API access)
+### 1) Login + policy-first governance (recommended)
 
 ```bash
 neurcode login
 neurcode init
+neurcode policy install soc2
+neurcode policy compile --intent "Do not use console.log; Do not use TODO"
+neurcode verify --policy-only
+```
+
+Run these commands inside a git repository. If you are in a new folder:
+
+```bash
+git init
+git add .
+git commit -m "chore: baseline"
+```
+
+### 2) Plan-enforced delivery (requires login/API access)
+
+```bash
 neurcode plan "Implement org-level RBAC"
 neurcode prompt
 neurcode verify --record --compiled-policy neurcode.policy.compiled.json --enforce-change-contract
 neurcode ship "Implement org-level RBAC" --max-fix-attempts 2
 ```
+
+### 3) Deterministic local artifact mode (advanced/CI)
+
+```bash
+neurcode policy lock --no-dashboard
+neurcode policy compile --no-dashboard --intent "Do not use console.log; Do not use TODO"
+neurcode verify --policy-only
+```
+
+Use this when you intentionally want local-only artifact generation without dashboard control-plane inputs.
 
 ## External plan import (Codex/Claude/Cursor/ChatGPT)
 

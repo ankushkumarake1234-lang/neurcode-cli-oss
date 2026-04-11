@@ -1,31 +1,38 @@
 # Workflow Overview
 
-Neurcode CLI supports two primary workflows.
+Neurcode CLI supports three practical workflows.
 
-## A) Policy-Only Governance (local-first)
+## A) Login + Policy-First Governance (recommended)
 
-Use this when you want deterministic policy checks without depending on remote plan APIs.
+Use this as the default onboarding and day-to-day workflow.
 
 ```bash
+neurcode login
+neurcode init
 neurcode policy install soc2
-neurcode policy lock --no-dashboard
-neurcode policy compile --no-dashboard --intent "Do not use console.log; Do not use TODO"
+neurcode policy compile --intent "Do not use console.log; Do not use TODO"
 neurcode verify --policy-only
 ```
 
 Recommended for:
 
-- workshops/cohorts
-- offline demos
 - contributor onboarding
+- cohorts and internal training
+- policy-first change gating before plan/delivery
+
+If you are not inside a git repository yet, initialize one first:
+
+```bash
+git init
+git add .
+git commit -m "chore: baseline"
+```
 
 ## B) Plan-Enforced Delivery (cloud-assisted)
 
 Use this for full plan adherence + governance workflows.
 
 ```bash
-neurcode login
-neurcode init
 neurcode plan "Describe intended change"
 neurcode prompt
 neurcode verify --record --enforce-change-contract --compiled-policy neurcode.policy.compiled.json
@@ -38,7 +45,7 @@ Recommended for:
 - tracked ticket/PR execution
 - adherence and evidence reporting
 
-## C) Imported plan workflow (Codex/Claude/Cursor/ChatGPT)
+## C) Imported Plan Workflow (Codex/Claude/Cursor/ChatGPT)
 
 ```bash
 neurcode contract import --provider codex --auto-detect --list-candidates
@@ -48,7 +55,7 @@ neurcode verify --record --enforce-change-contract
 
 ## Notes for maintainers
 
-- Use `policy lock --no-dashboard` for OSS reproducibility when contributors may not be logged in.
+- `policy lock --no-dashboard` is optional and best used for deterministic OSS/CI pipelines.
+- Logged-in users can run `verify` without manually exporting governance signing keys; local signing material is provisioned automatically when needed by org policy.
 - Use `--require-deterministic-match` only when policy intent statements are compatible with deterministic templates.
 - Run `pnpm ci:oss` before merging OSS changes.
-

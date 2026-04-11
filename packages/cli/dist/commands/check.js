@@ -44,12 +44,30 @@ const project_detector_1 = require("../utils/project-detector");
 const promises_1 = require("readline/promises");
 const process_1 = require("process");
 const messages_1 = require("../utils/messages");
+function isGitRepository(cwd) {
+    try {
+        const output = (0, child_process_1.execSync)('git rev-parse --is-inside-work-tree', {
+            cwd,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: 1024 * 1024,
+        }).trim().toLowerCase();
+        return output === 'true';
+    }
+    catch {
+        return false;
+    }
+}
 async function checkCommand(options) {
     try {
+        if (!isGitRepository(process.cwd())) {
+            (0, messages_1.printError)('Git repository required', 'Run this command inside a git repository. If this is a new folder, run: git init && git add . && git commit -m "chore: baseline"');
+            process.exit(1);
+        }
         // Determines which diff to capture
         let diffText;
         if (options.staged) {
-            diffText = (0, child_process_1.execSync)('git diff --staged', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
+            diffText = (0, child_process_1.execSync)('git diff --cached', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
         }
         else if (options.base) {
             diffText = (0, git_1.getDiffFromBase)(options.base);
@@ -60,7 +78,7 @@ async function checkCommand(options) {
         else {
             // Default: check staged, fallback to HEAD
             try {
-                diffText = (0, child_process_1.execSync)('git diff --staged', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
+                diffText = (0, child_process_1.execSync)('git diff --cached', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });
             }
             catch {
                 diffText = (0, child_process_1.execSync)('git diff HEAD', { maxBuffer: 1024 * 1024 * 1024, encoding: 'utf-8' });

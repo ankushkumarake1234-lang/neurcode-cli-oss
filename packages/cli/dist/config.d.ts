@@ -10,7 +10,15 @@ export interface NeurcodeConfig {
     projectId?: string;
     orgId?: string;
 }
+export interface LocalGovernanceSigningMaterial {
+    signingKey: string;
+    signingKeyId: string;
+    source: 'persisted' | 'generated';
+}
 export declare function loadConfig(): NeurcodeConfig;
+export declare function getOrCreateLocalGovernanceSigningMaterial(options?: {
+    autoProvision?: boolean;
+}): LocalGovernanceSigningMaterial | null;
 /**
  * Get API key with helpful error message if not found
  */
