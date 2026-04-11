@@ -57,7 +57,7 @@ Use signed AI change logs for fail-closed governance in `verify`/`ship`.
 # Mandatory signed logs (fail closed when key material is missing)
 export NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS=1
 
-# Single-key mode (explicit key management)
+# Single-key mode
 export NEURCODE_GOVERNANCE_SIGNING_KEY="<strong-random-secret>"
 export NEURCODE_GOVERNANCE_SIGNING_KEY_ID="kid-prod-2026-03"
 
@@ -70,8 +70,7 @@ Notes:
 - `verify` writes and verifies `.neurcode/ai-change-log.json` with integrity chain checks.
 - If signed logs are required and integrity/signature checks fail, `verify` exits non-zero.
 - `ship` will block deployment when required signed AI logs are missing/invalid.
-- Logged-in users get local signing material auto-provisioned when org policy requires signed logs.
-- `policy compile` and `plan` auto-sign deterministic artifacts when signing material is available.
+- `policy compile` and `plan` auto-sign deterministic artifacts when governance signing keys are configured.
 - Use `--require-signed-artifacts` (or `NEURCODE_VERIFY_REQUIRE_SIGNED_ARTIFACTS=1`) to fail closed on unsigned/tampered artifacts.
 
 ## Docs

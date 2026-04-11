@@ -17,7 +17,6 @@ neurcode start
 ## Primary Workflow (Recommended)
 
 ```bash
-neurcode login
 neurcode init
 neurcode policy compile --intent "No auth bypass, no secret literals" --require-deterministic-match
 neurcode plan "Add org-level RBAC" --ticket NEU-123
@@ -27,12 +26,6 @@ neurcode ship "Harden auth middleware" --max-fix-attempts 3 --test-command "pnpm
 ```
 
 `neurcode start` prints this guided flow and optional next steps.
-
-Run these commands from inside a git repository. If needed:
-
-```bash
-git init && git add . && git commit -m "chore: baseline"
-```
 
 ## Identity and Scope
 
@@ -175,12 +168,12 @@ neurcode --help
 neurcode <command> --help
 ```
 
-## OSS Safety and Boundary Checks
+## Private Repo Guardrails (Workspace Scripts)
 
 ```bash
-pnpm oss:check
-pnpm oss:check:boundary
-pnpm cli:smoke
+pnpm guardrails:install-hooks
+pnpm guardrails:check-hooks
+pnpm ci:main-push-policy
 ```
 
-If command behavior in this file ever diverges from runtime behavior, treat runtime (`packages/cli/dist/index.js`) as source of truth and update this document.
+If command behavior in this file ever diverges from runtime behavior, treat runtime (`packages/cli/src/index.ts`) as source of truth and update this document.

@@ -15,10 +15,15 @@ export interface LocalGovernanceSigningMaterial {
     signingKeyId: string;
     source: 'persisted' | 'generated';
 }
-export declare function loadConfig(): NeurcodeConfig;
+/**
+ * Resolve a local governance signing key from ~/.neurcoderc.
+ * If authenticated and no key exists, auto-provision one for smoother
+ * login-first onboarding in orgs that require signed AI logs.
+ */
 export declare function getOrCreateLocalGovernanceSigningMaterial(options?: {
     autoProvision?: boolean;
 }): LocalGovernanceSigningMaterial | null;
+export declare function loadConfig(): NeurcodeConfig;
 /**
  * Get API key with helpful error message if not found
  */

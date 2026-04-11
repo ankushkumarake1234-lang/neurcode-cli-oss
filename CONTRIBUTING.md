@@ -1,61 +1,42 @@
-# Contributing to Neurcode CLI OSS
+# Contributing to Neurcode
 
-Thanks for contributing. This repository is intentionally strict on security, boundary integrity, and reproducible CLI behavior.
+Thanks for contributing. This repo enforces governance and security checks strictly.
 
-## Before you start
-
-Read:
-
-- [README.md](./README.md)
-- [docs/cli-commands.md](./docs/cli-commands.md)
-- [docs/workflow-overview.md](./docs/workflow-overview.md)
-- [docs/architecture/oss-architecture.md](./docs/architecture/oss-architecture.md)
+Read these before your first PR:
+- `README.md`
+- `docs/workflow-overview.md`
+- `docs/architecture/oss-architecture.md`
 
 ## Local setup
 
 ```bash
 pnpm install
-pnpm ci:oss
+pnpm oss:check
+pnpm build:cli
 ```
 
-## Branch + PR workflow
+## Development workflow
 
-1. Open or reference an issue.
-2. Create a branch from `main`.
-3. Keep PR scope to one concern (bug fix, doc update, or feature unit).
-4. Run `pnpm ci:oss`.
-5. Open PR with verification details.
-
-## Required checks before PR
+1. Create a branch from `main`.
+2. Keep changes scoped to one concern per PR.
+3. Run the minimum required checks before opening PR:
 
 ```bash
 pnpm oss:check
-pnpm oss:check:boundary
-pnpm cli:help
-pnpm cli:smoke
+pnpm build:cli
+pnpm test:contracts
 ```
 
-## Security and boundary expectations
+## Security requirements
 
-- Never commit secrets, tokens, credentials, private keys, or real `.env` files.
-- Never commit local runtime/cache artifacts (`.neurcode/`, `.pnpm-store/`, local DB files, temporary auth files).
-- If a secret exposure is suspected:
-  1. rotate/revoke immediately,
-  2. remove from tracked files,
-  3. run `pnpm oss:check`,
-  4. open a remediation PR.
+- Never commit credentials, tokens, private keys, or `.env` files.
+- Never commit local runtime/cache artifacts (`.neurcode/`, `.pnpm-store/`, local DB dumps).
+- If a secret is exposed, rotate it first, then open a fix PR.
 
-## Commit and PR quality bar
+## Commit and PR quality
 
-- Use conventional and scoped commit messages where possible (for example: `fix(oss): ignore node_modules in boundary scan`).
-- Include a PR verification section:
-  - exact commands run
-  - expected vs actual results
-  - migration/compatibility notes
-  - risk and rollback notes
-
-## Review policy
-
-- At least one maintainer approval is required.
-- CI must pass before merge.
-- Maintainers may request additional evidence for policy/verify behavior changes.
+- Use clear commit messages (example: `fix(cli): prevent cross-repo scan outside git root`).
+- Include a short verification section in PR description:
+  - commands run
+  - expected vs actual behavior
+  - risk/rollback notes

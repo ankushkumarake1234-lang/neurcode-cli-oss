@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_API_URL = void 0;
+exports.getOrCreateLocalGovernanceSigningMaterial = getOrCreateLocalGovernanceSigningMaterial;
 exports.loadConfig = loadConfig;
 exports.getApiKey = getApiKey;
 exports.requireApiKey = requireApiKey;
@@ -8,7 +9,6 @@ exports.saveGlobalAuth = saveGlobalAuth;
 exports.getGlobalAuthPath = getGlobalAuthPath;
 exports.deleteGlobalAuth = deleteGlobalAuth;
 exports.deleteApiKeyFromAllSources = deleteApiKeyFromAllSources;
-exports.getOrCreateLocalGovernanceSigningMaterial = getOrCreateLocalGovernanceSigningMaterial;
 const fs_1 = require("fs");
 const path_1 = require("path");
 const crypto_1 = require("crypto");
