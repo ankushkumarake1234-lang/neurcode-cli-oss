@@ -449,6 +449,55 @@ function areSymbolTypesCompatible(expectedType, actualType, relaxedMatching) {
     }
     return false;
 }
+function doesSymbolFileMatch(expectedFile, actualFile, allowSymbolFileBasenameFallback) {
+    if (!expectedFile) {
+        return true;
+    }
+    if (actualFile && actualFile === expectedFile) {
+        return true;
+    }
+    if (!allowSymbolFileBasenameFallback) {
+        return false;
+    }
+    const expectedBasename = toFileBasename(expectedFile);
+    const actualBasename = toFileBasename(actualFile);
+    if (!expectedBasename || !actualBasename || expectedBasename !== actualBasename) {
+        return false;
+    }
+    return true;
+}
+function hasLikelyRenameForExpectedSymbol(expectedSymbol, changedSymbols, options) {
+    if (expectedSymbol.action !== 'MODIFY')
+        return false;
+    const deletedMatches = changedSymbols.filter((actualSymbol) => (actualSymbol.action === 'delete'
+        && actualSymbol.name === expectedSymbol.name
+        && areSymbolTypesCompatible(expectedSymbol.type, actualSymbol.type, options.relaxedSymbolTypeMatching)
+        && doesSymbolFileMatch(expectedSymbol.file, actualSymbol.file, options.allowSymbolFileBasenameFallback)));
+    if (deletedMatches.length === 0) {
+        return false;
+    }
+    for (const deletedSymbol of deletedMatches) {
+        const replacementExists = changedSymbols.some((actualSymbol) => {
+            if (actualSymbol.action !== 'add' && actualSymbol.action !== 'modify')
+                return false;
+            if (actualSymbol.name === expectedSymbol.name)
+                return false;
+            if (!areSymbolTypesCompatible(expectedSymbol.type, actualSymbol.type, options.relaxedSymbolTypeMatching)) {
+                return false;
+            }
+            // When file is known, prefer a same-file replacement for rename-like edits.
+            if (deletedSymbol.file && actualSymbol.file && deletedSymbol.file === actualSymbol.file) {
+                return true;
+            }
+            // Fallback to expected file scope matching.
+            return doesSymbolFileMatch(expectedSymbol.file, actualSymbol.file, options.allowSymbolFileBasenameFallback);
+        });
+        if (replacementExists) {
+            return true;
+        }
+    }
+    return false;
+}
 function evaluateChangeContract(contract, input) {
     let violations = [];
     if (contract.planId !== input.planId) {
@@ -557,6 +606,7 @@ function evaluateChangeContract(contract, input) {
     }
     const enforceExpectedSymbols = contract.options?.enforceExpectedSymbols === true;
     const enforceSymbolActionMatching = contract.options?.enforceSymbolActionMatching === true;
+    let symbolRenameMatches = 0;
     if (expectedSymbols.length > 0) {
         for (const expectedSymbol of expectedSymbols) {
             const symbolMatches = changedSymbols.filter((actualSymbol) => {
@@ -565,21 +615,15 @@ function evaluateChangeContract(contract, input) {
                 if (!areSymbolTypesCompatible(expectedSymbol.type, actualSymbol.type, relaxedSymbolTypeMatching)) {
                     return false;
                 }
-                if (expectedSymbol.file) {
-                    if (actualSymbol.file && actualSymbol.file === expectedSymbol.file) {
-                        return true;
-                    }
-                    if (!allowSymbolFileBasenameFallback) {
-                        return false;
-                    }
-                    const expectedBasename = toFileBasename(expectedSymbol.file);
-                    const actualBasename = toFileBasename(actualSymbol.file);
-                    if (!expectedBasename || !actualBasename || expectedBasename !== actualBasename) {
-                        return false;
-                    }
-                }
-                return true;
+                return doesSymbolFileMatch(expectedSymbol.file, actualSymbol.file, allowSymbolFileBasenameFallback);
             });
+            const likelyRenameMatch = hasLikelyRenameForExpectedSymbol(expectedSymbol, changedSymbols, {
+                relaxedSymbolTypeMatching,
+                allowSymbolFileBasenameFallback,
+            });
+            if (likelyRenameMatch) {
+                symbolRenameMatches += 1;
+            }
             if (expectedSymbol.action === 'BLOCK') {
                 if (symbolMatches.length > 0) {
                     violations.push({
@@ -597,7 +641,7 @@ function evaluateChangeContract(contract, input) {
                 ? ['add', 'modify']
                 : ['add', 'modify'];
             const hasAllowedAction = symbolMatches.some((match) => allowedActions.includes(match.action));
-            if (enforceExpectedSymbols && symbolMatches.length === 0) {
+            if (enforceExpectedSymbols && symbolMatches.length === 0 && !likelyRenameMatch) {
                 violations.push({
                     code: 'CHANGE_CONTRACT_MISSING_EXPECTED_SYMBOL',
                     message: `Expected symbol was not changed: ${expectedSymbol.name}` +
@@ -608,7 +652,7 @@ function evaluateChangeContract(contract, input) {
                     expected: expectedSymbol.action,
                 });
             }
-            if (enforceSymbolActionMatching && symbolMatches.length > 0 && !hasAllowedAction) {
+            if (enforceSymbolActionMatching && symbolMatches.length > 0 && !hasAllowedAction && !likelyRenameMatch) {
                 violations.push({
                     code: 'CHANGE_CONTRACT_SYMBOL_ACTION_MISMATCH',
                     message: `Symbol action mismatch for ${expectedSymbol.name}: planned ${expectedSymbol.action}, got ${symbolMatches
@@ -661,6 +705,7 @@ function evaluateChangeContract(contract, input) {
             missingExpectedSymbols,
             blockedSymbolsTouched,
             symbolActionMismatches,
+            symbolRenameMatches,
             toleratedUnexpectedFiles,
             toleratedMissingExpectedSymbols,
         },
@@ -707,6 +752,7 @@ function groupChangeContractViolations(violations) {
         const created = {
             key,
             title,
+            impact: explainImpactByGroupKey(key),
             items: [],
             count: 0,
         };
@@ -778,5 +824,28 @@ function groupChangeContractViolations(violations) {
         ...group,
         items: [...new Set(group.items)],
     }));
+}
+function explainImpactByGroupKey(key) {
+    switch (key) {
+        case 'out_of_scope_changes':
+            return 'Changes escaped intended scope and may introduce architectural drift or hidden side effects.';
+        case 'missing_expected_files':
+            return 'Planned implementation work is incomplete, so intended behavior may be partially delivered.';
+        case 'blocked_files_touched':
+            return 'A protected file was edited; this can bypass governance boundaries.';
+        case 'file_action_mismatches':
+            return 'File-level operations differ from plan intent and may invalidate review assumptions.';
+        case 'missing_expected_symbols':
+            return 'Expected implementation logic is missing and critical behavior may not be enforced.';
+        case 'blocked_symbols_touched':
+            return 'A blocked symbol changed, which can re-introduce prohibited behavior.';
+        case 'symbol_action_mismatches':
+            return 'Symbol edits differ from intended action and may alter behavior unexpectedly.';
+        case 'contract_metadata_mismatches':
+            return 'Plan/policy artifacts are out of sync, reducing confidence in deterministic verification.';
+        case 'other':
+        default:
+            return 'Contract drift detected and manual review is required.';
+    }
 }
 //# sourceMappingURL=change-contract.js.map

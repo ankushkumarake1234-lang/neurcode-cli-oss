@@ -103,6 +103,7 @@ export interface ChangeContractEvaluation {
         missingExpectedSymbols: number;
         blockedSymbolsTouched: number;
         symbolActionMismatches: number;
+        symbolRenameMatches: number;
         toleratedUnexpectedFiles: number;
         toleratedMissingExpectedSymbols: number;
     };
@@ -152,6 +153,7 @@ export declare function evaluateChangeContract(contract: ChangeContract, input: 
 export interface ChangeContractViolationGroup {
     key: 'out_of_scope_changes' | 'missing_expected_files' | 'blocked_files_touched' | 'file_action_mismatches' | 'missing_expected_symbols' | 'blocked_symbols_touched' | 'symbol_action_mismatches' | 'contract_metadata_mismatches' | 'other';
     title: string;
+    impact: string;
     items: string[];
     count: number;
 }

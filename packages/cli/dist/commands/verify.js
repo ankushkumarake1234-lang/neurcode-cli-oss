@@ -3939,6 +3939,7 @@ function displayChangeContractDrift(summary, options = { advisory: false }) {
         if (group.items.length > maxItemsPerGroup) {
             console.log(chalk.dim(`  - ... ${group.items.length - maxItemsPerGroup} more`));
         }
+        console.log(chalk.dim(`  Why it matters: ${group.impact}`));
     }
     console.log(chalk.dim('\nSummary:'));
     console.log(chalk.dim('Implementation deviates from intended contract.'));
