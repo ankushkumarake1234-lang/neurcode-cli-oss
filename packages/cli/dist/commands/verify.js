@@ -51,7 +51,6 @@ const path_1 = require("path");
 const fs_1 = require("fs");
 const state_1 = require("../utils/state");
 const ROILogger_1 = require("../utils/ROILogger");
-const box_1 = require("../utils/box");
 const ignore_1 = require("../utils/ignore");
 const project_root_1 = require("../utils/project-root");
 const brain_context_1 = require("../utils/brain-context");
@@ -3098,6 +3097,8 @@ async function verifyCommand(options) {
                     code: item.code,
                     message: item.message,
                     file: item.file,
+                    symbol: item.symbol,
+                    symbolType: item.symbolType,
                     expected: item.expected,
                     actual: item.actual,
                 })),
@@ -3109,9 +3110,8 @@ async function verifyCommand(options) {
                     severity: 'block',
                     message: item.message,
                 }));
-                const message = `Change contract enforcement failed: ${changeContractEvaluation.violations
-                    .map((item) => item.message)
-                    .join('; ')}`;
+                const message = `Implementation deviates from intended contract (` +
+                    `${changeContractEvaluation.violations.length} violation(s)).`;
                 if (options.json) {
                     emitVerifyJson({
                         grade: 'F',
@@ -3132,11 +3132,7 @@ async function verifyCommand(options) {
                     });
                 }
                 else {
-                    console.log(chalk.red('\n⛔ Change contract enforcement failed'));
-                    changeContractEvaluation.violations.forEach((item) => {
-                        console.log(chalk.red(`   • ${item.message}`));
-                    });
-                    console.log(chalk.dim(`   Contract path: ${changeContractRead.path}`));
+                    displayChangeContractDrift(changeContractSummary, { advisory: false });
                 }
                 await recordVerificationIfRequested(options, config, {
                     grade: 'F',
@@ -3160,13 +3156,7 @@ async function verifyCommand(options) {
                 process.exit(2);
             }
             else if (!changeContractEvaluation.valid && !options.json) {
-                console.log(chalk.yellow('\n⚠️  Change contract drift detected (advisory mode)'));
-                changeContractEvaluation.violations.slice(0, 5).forEach((item) => {
-                    console.log(chalk.yellow(`   • ${item.message}`));
-                });
-                if (changeContractEvaluation.violations.length > 5) {
-                    console.log(chalk.dim(`   ... ${changeContractEvaluation.violations.length - 5} more violation(s)`));
-                }
+                displayChangeContractDrift(changeContractSummary, { advisory: true });
             }
         }
         // Call verify API
@@ -3924,111 +3914,83 @@ function displayGovernanceInsights(governance, options = {}) {
         });
     }
 }
+function displayChangeContractDrift(summary, options = { advisory: false }) {
+    const groups = (0, change_contract_1.groupChangeContractViolations)(summary.violations.map((item) => ({
+        code: item.code,
+        message: item.message,
+        ...(item.file ? { file: item.file } : {}),
+        ...(item.symbol ? { symbol: item.symbol } : {}),
+        ...(item.symbolType ? { symbolType: item.symbolType } : {}),
+        ...(item.expected ? { expected: item.expected } : {}),
+        ...(item.actual ? { actual: item.actual } : {}),
+    })));
+    if (groups.length === 0)
+        return;
+    const maxItemsPerGroup = options.maxItemsPerGroup ?? 12;
+    const header = options.advisory
+        ? chalk.yellow('\nWARN ⚠️  Change contract drift detected')
+        : chalk.red('\nFAIL ❌  Change contract enforcement failed');
+    console.log(header);
+    for (const group of groups) {
+        console.log(chalk.white(`\n${group.title}:`));
+        group.items.slice(0, maxItemsPerGroup).forEach((entry) => {
+            console.log(`  - ${entry}`);
+        });
+        if (group.items.length > maxItemsPerGroup) {
+            console.log(chalk.dim(`  - ... ${group.items.length - maxItemsPerGroup} more`));
+        }
+    }
+    console.log(chalk.dim('\nSummary:'));
+    console.log(chalk.dim('Implementation deviates from intended contract.'));
+    console.log(chalk.dim(`Contract path: ${summary.path}`));
+}
 /**
  * Display verification results in a formatted report card
  */
 function displayVerifyResults(result, policyViolations) {
-    // Calculate grade/score
-    // CRITICAL: 0/0 planned files = 'F' (Incomplete)
-    // Bloat automatically drops grade by at least one letter
-    let grade;
-    let gradeColor;
-    if (result.totalPlannedFiles === 0 && result.plannedFilesModified === 0) {
-        // Special case: No planned files = Incomplete (F)
-        grade = 'F';
-        gradeColor = chalk.red;
-    }
-    else if (result.verdict === 'PASS') {
-        grade = 'A';
-        gradeColor = chalk.green;
-    }
-    else if (result.verdict === 'WARN') {
-        // Base grade calculation
-        let baseGrade = result.adherenceScore >= 70 ? 'B' : result.adherenceScore >= 50 ? 'C' : 'D';
-        // Bloat drops grade by one letter (B -> C, C -> D, D -> F)
-        if (result.bloatCount > 0) {
-            if (baseGrade === 'B')
-                baseGrade = 'C';
-            else if (baseGrade === 'C')
-                baseGrade = 'D';
-            else if (baseGrade === 'D')
-                baseGrade = 'F';
-        }
-        grade = baseGrade;
-        gradeColor = chalk.yellow;
-    }
-    else {
-        grade = 'F';
-        gradeColor = chalk.red;
-    }
-    // Calculate estimated time saved (5 minutes per VERIFY_PASS)
-    const estimatedMinutesSaved = result.verdict === 'PASS' ? 5 : 0;
-    // Calculate policy compliance percentage
-    const policyCompliance = result.bloatCount === 0 ? 100 : Math.max(0, 100 - (result.bloatCount * 10));
-    // Display Governance Badge for PASS and FAIL verdicts (high visibility)
-    if (result.verdict === 'PASS' || result.verdict === 'FAIL') {
-        console.log('\n');
-        const borderColor = result.verdict === 'PASS' ? 'green' : 'red';
-        const gradeColorFunc = result.verdict === 'PASS' ? chalk.green.bold : chalk.red.bold;
-        const badgeContent = [
-            `${chalk.bold.white('Governance Badge')}`,
-            '',
-            `${chalk.cyan('Grade:')} ${gradeColorFunc(grade)} ${chalk.dim(`(${result.adherenceScore}%)`)}`,
-            result.verdict === 'PASS' ? `${chalk.cyan('Estimated Time Saved:')} ${chalk.green.bold(`${estimatedMinutesSaved}m`)}` : '',
-            `${chalk.cyan('Policy Compliance:')} ${result.verdict === 'PASS' ? chalk.green.bold(`${policyCompliance}%`) : chalk.red.bold(`${policyCompliance}%`)}`,
-        ].filter(line => line !== '').join('\n');
-        console.log((0, box_1.createBox)(badgeContent, {
-            borderColor,
-            titleColor: 'white',
-            padding: 2,
-        }));
-        console.log('');
-    }
-    console.log(chalk.bold.cyan('📋 Plan Adherence Report\n'));
-    console.log('━'.repeat(50));
-    const scoreDisplay = gradeColor(`Grade: ${grade} (${result.adherenceScore}%)`);
-    if (result.verdict === 'PASS') {
-        console.log(chalk.green('✅'), scoreDisplay);
-    }
-    else if (result.verdict === 'WARN') {
-        console.log(chalk.yellow('⚠️ '), scoreDisplay);
-    }
-    else {
-        console.log(chalk.red('❌'), scoreDisplay);
-    }
-    console.log('');
-    console.log(chalk.bold.white('Adherence:'));
-    console.log(`   ${result.plannedFilesModified}/${result.totalPlannedFiles} planned files modified`);
-    console.log(`   ${result.adherenceScore}% adherence to plan`);
-    // Display bloat
+    const verdictLabel = result.verdict === 'PASS'
+        ? chalk.green('PASS ✅')
+        : result.verdict === 'WARN'
+            ? chalk.yellow('WARN ⚠️')
+            : chalk.red('FAIL ❌');
+    const plannedText = `${result.plannedFilesModified}/${result.totalPlannedFiles}`;
+    console.log(`\n${verdictLabel}`);
+    console.log(chalk.dim(`Plan adherence: ${plannedText} files (${result.adherenceScore}%)`));
+    const maxItems = 20;
     if (result.bloatCount > 0) {
-        console.log('');
-        console.log(chalk.bold.red(`🚫 Bloat Detected: ${result.bloatCount} unexpected file(s)`));
-        console.log(chalk.red('   Blocked Bloat:'));
-        result.bloatFiles.forEach(file => {
-            console.log(chalk.red(`     • ${file}`));
+        console.log(chalk.red('\nOut-of-scope changes:'));
+        result.bloatFiles.slice(0, maxItems).forEach((file) => {
+            console.log(`  - ${file}`);
         });
+        if (result.bloatFiles.length > maxItems) {
+            console.log(chalk.dim(`  - ... ${result.bloatFiles.length - maxItems} more`));
+        }
     }
-    else {
-        console.log('');
-        console.log(chalk.green('✅ No bloat detected - all changes match the plan'));
-    }
-    // Display custom policy violations from dashboard
     if (policyViolations && policyViolations.length > 0) {
-        console.log('');
-        const blockCount = policyViolations.filter(v => v.severity === 'block').length;
-        const label = blockCount > 0
-            ? chalk.bold.red(`🚫 Custom Policy Violations: ${policyViolations.length} (${blockCount} blocking)`)
-            : chalk.bold.yellow(`⚠️  Custom Policy Warnings: ${policyViolations.length}`);
-        console.log(label);
-        policyViolations.forEach(v => {
-            const lineColor = v.severity === 'block' ? chalk.red : chalk.yellow;
-            console.log(lineColor(`     • ${v.file}: ${v.message || v.rule}`));
-        });
+        const blocking = policyViolations.filter((item) => item.severity === 'block');
+        const warnings = policyViolations.filter((item) => item.severity !== 'block');
+        if (blocking.length > 0) {
+            console.log(chalk.red('\nBlocking policy violations:'));
+            blocking.slice(0, maxItems).forEach((item) => {
+                console.log(`  - ${item.file}: ${item.message || item.rule}`);
+            });
+            if (blocking.length > maxItems) {
+                console.log(chalk.dim(`  - ... ${blocking.length - maxItems} more`));
+            }
+        }
+        if (warnings.length > 0) {
+            console.log(chalk.yellow('\nPolicy warnings:'));
+            warnings.slice(0, maxItems).forEach((item) => {
+                console.log(`  - ${item.file}: ${item.message || item.rule}`);
+            });
+            if (warnings.length > maxItems) {
+                console.log(chalk.dim(`  - ... ${warnings.length - maxItems} more`));
+            }
+        }
     }
-    console.log('');
-    console.log('━'.repeat(50));
-    console.log(chalk.dim(result.message));
-    console.log('');
+    if (result.bloatCount === 0 && (!policyViolations || policyViolations.length === 0)) {
+        console.log(chalk.green('\nNo drift detected.'));
+    }
+    console.log(chalk.dim(`\nSummary: ${result.message}\n`));
 }
 //# sourceMappingURL=verify.js.map

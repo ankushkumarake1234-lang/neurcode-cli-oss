@@ -4,6 +4,8 @@ exports.extractDeclaredSymbolsFromDiff = extractDeclaredSymbolsFromDiff;
 const SYMBOL_EXTENSIONS = new Set([
     '.ts',
     '.tsx',
+    '.mts',
+    '.cts',
     '.js',
     '.jsx',
     '.mjs',
@@ -35,7 +37,33 @@ function normalizeSymbolName(value) {
 function isValidIdentifier(value) {
     return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
 }
+function stripInlineComments(line) {
+    const hashIndex = line.indexOf('#');
+    if (hashIndex >= 0 && !/["'`]/.test(line.slice(0, hashIndex))) {
+        return line.slice(0, hashIndex);
+    }
+    const slashIndex = line.indexOf('//');
+    if (slashIndex >= 0) {
+        return line.slice(0, slashIndex);
+    }
+    return line;
+}
+const METHOD_RESERVED_NAMES = new Set([
+    'if',
+    'for',
+    'while',
+    'switch',
+    'catch',
+    'return',
+    'else',
+    'do',
+    'try',
+    'finally',
+    'throw',
+    'constructor',
+]);
 function extractDeclaredSymbolsFromLine(line) {
+    const sanitizedLine = stripInlineComments(line);
     const matches = [];
     const seen = new Set();
     const push = (name, type) => {
@@ -54,6 +82,11 @@ function extractDeclaredSymbolsFromLine(line) {
             regex: /^\s*(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/,
         },
         {
+            type: 'class',
+            regex: /^\s*(?:export\s+)?default\s+class(?:\s+([A-Za-z_$][A-Za-z0-9_$]*))?\b/,
+            resolver: (match) => (match[1] ? match[1] : 'default'),
+        },
+        {
             type: 'interface',
             regex: /^\s*(?:export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/,
         },
@@ -67,11 +100,32 @@ function extractDeclaredSymbolsFromLine(line) {
         },
         {
             type: 'function',
+            regex: /^\s*(?:export\s+)?default\s+(?:async\s+)?function\s*\(/,
+            resolver: () => 'default',
+        },
+        {
+            type: 'function',
             regex: /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>/,
         },
         {
+            type: 'function',
+            regex: /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?function\b/,
+        },
+        {
             type: 'method',
-            regex: /^\s*(?:public|private|protected|static|async)\s+(?:get\s+|set\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^;]*\)\s*\{/,
+            regex: /^\s*(?:public|private|protected|readonly|static|async|get|set|\s)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^;{}]*\)\s*\{/,
+            resolver: (match) => {
+                const candidate = match[1] || null;
+                if (!candidate)
+                    return null;
+                if (METHOD_RESERVED_NAMES.has(candidate))
+                    return null;
+                return candidate;
+            },
+        },
+        {
+            type: 'method',
+            regex: /^\s*(?:public|private|protected|readonly|static)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>/,
         },
         {
             type: 'class',
@@ -87,9 +141,12 @@ function extractDeclaredSymbolsFromLine(line) {
         },
     ];
     for (const spec of patternSpecs) {
-        const match = line.match(spec.regex);
-        if (match && match[1]) {
-            push(match[1], spec.type);
+        const match = sanitizedLine.match(spec.regex);
+        if (!match)
+            continue;
+        const resolved = spec.resolver ? spec.resolver(match) : match[1] || null;
+        if (resolved) {
+            push(resolved, spec.type);
         }
     }
     return matches;
@@ -101,8 +158,11 @@ function extractDeclaredSymbolsFromDiff(diffFiles) {
         if (!normalizedPath || !isSymbolCandidateFile(normalizedPath))
             continue;
         for (const hunk of file.hunks || []) {
+            const hasDelta = (hunk.lines || []).some((line) => line.type === 'added' || line.type === 'removed');
+            if (!hasDelta)
+                continue;
             for (const line of hunk.lines || []) {
-                if (line.type !== 'added' && line.type !== 'removed')
+                if (line.type !== 'added' && line.type !== 'removed' && line.type !== 'context')
                     continue;
                 const declared = extractDeclaredSymbolsFromLine(line.content);
                 if (declared.length === 0)
@@ -115,11 +175,14 @@ function extractDeclaredSymbolsFromDiff(diffFiles) {
                         type: symbol.type,
                         added: 0,
                         removed: 0,
+                        context: 0,
                     };
                     if (line.type === 'added')
                         current.added += 1;
                     if (line.type === 'removed')
                         current.removed += 1;
+                    if (line.type === 'context')
+                        current.context += 1;
                     counters.set(key, current);
                 }
             }
@@ -133,6 +196,9 @@ function extractDeclaredSymbolsFromDiff(diffFiles) {
         }
         else if (item.added > 0) {
             action = 'add';
+        }
+        else if (item.removed === 0 && item.context > 0) {
+            action = 'modify';
         }
         changes.push({
             name: item.name,

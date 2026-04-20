@@ -56,6 +56,22 @@ export interface ChangeContractOptions {
      * When enabled, symbol-level operation matching is validated against expected symbol actions.
      */
     enforceSymbolActionMatching?: boolean;
+    /**
+     * When enabled (default), function/method/const symbol kinds can match compatible declarations.
+     */
+    symbolTypeRelaxedMatching?: boolean;
+    /**
+     * Allows expected symbol file constraints to fallback to basename matching.
+     */
+    symbolFileBasenameFallback?: boolean;
+    /**
+     * Tolerate this many out-of-contract file touches before failing.
+     */
+    maxUnexpectedFiles?: number;
+    /**
+     * Tolerate this many missing expected symbols before failing.
+     */
+    maxMissingExpectedSymbols?: number;
 }
 export interface ReadChangeContractResult {
     path: string;
@@ -87,6 +103,8 @@ export interface ChangeContractEvaluation {
         missingExpectedSymbols: number;
         blockedSymbolsTouched: number;
         symbolActionMismatches: number;
+        toleratedUnexpectedFiles: number;
+        toleratedMissingExpectedSymbols: number;
     };
 }
 export declare function createChangeContract(input: {
@@ -131,4 +149,11 @@ export declare function evaluateChangeContract(contract: ChangeContract, input: 
     policyLockFingerprint?: string | null;
     compiledPolicyFingerprint?: string | null;
 }): ChangeContractEvaluation;
+export interface ChangeContractViolationGroup {
+    key: 'out_of_scope_changes' | 'missing_expected_files' | 'blocked_files_touched' | 'file_action_mismatches' | 'missing_expected_symbols' | 'blocked_symbols_touched' | 'symbol_action_mismatches' | 'contract_metadata_mismatches' | 'other';
+    title: string;
+    items: string[];
+    count: number;
+}
+export declare function groupChangeContractViolations(violations: ChangeContractViolation[]): ChangeContractViolationGroup[];
 //# sourceMappingURL=change-contract.d.ts.map

@@ -62,12 +62,15 @@ catch (error) {
 const program = new commander_1.Command();
 const CORE_WORKFLOW_STEPS = [
     '1) neurcode init',
-    '2) neurcode plan "Describe the change"',
-    '3) neurcode prompt',
-    '4) neurcode verify --record',
-    '5) neurcode ship "Goal" --max-fix-attempts 2',
+    '2) neurcode login',
+    '3) neurcode verify --plan-id <id> --enforce-change-contract',
+    '4) neurcode fix --plan-id <id> (optional)',
 ];
 const ADVANCED_WORKFLOW_HINTS = [
+    'neurcode plan "Describe the change"',
+    'neurcode contract import --auto-detect --write-change-contract',
+    'neurcode prompt',
+    'neurcode ship "Goal" --max-fix-attempts 2',
     'neurcode ask "<question>"',
     'neurcode simulate --base origin/main',
     'neurcode guard start && neurcode guard check --staged',
@@ -121,7 +124,7 @@ showWelcomeIfNeeded().catch(() => {
 });
 program
     .command('start')
-    .description('Show guided Neurcode flow (init -> plan -> prompt -> verify -> ship)')
+    .description('Show guided Neurcode flow (init -> login -> verify -> fix)')
     .option('--run-init', 'Run `neurcode init` immediately after showing the guide')
     .option('--json', 'Output machine-readable onboarding metadata')
     .action(async (options) => {
@@ -640,6 +643,37 @@ program
         noRecord: options.record === false,
         skipTests: options.skipTests === true ? true : undefined,
         publishCard: options.publishCard !== false,
+        json: options.json === true,
+    });
+});
+program
+    .command('fix')
+    .description('Primary alias for remediation loop (verify -> fix -> verify)')
+    .option('--goal <text>', 'Goal text for remediation loop')
+    .option('--plan-id <id>', 'Plan ID for verify scope checks')
+    .option('--project-id <id>', 'Project ID override')
+    .option('--max-fix-attempts <n>', 'Maximum remediation attempts (default: 2)', (val) => parseInt(val, 10))
+    .option('--policy-only', 'Run in policy-only verification mode')
+    .option('--require-plan', 'Fail verify if plan context is missing')
+    .option('--strict-artifacts', 'Require deterministic compiled-policy/change-contract artifacts')
+    .option('--no-strict-artifacts', 'Disable strict deterministic artifact enforcement')
+    .option('--enforce-change-contract', 'Require change contract enforcement')
+    .option('--no-enforce-change-contract', 'Disable change contract enforcement')
+    .option('--require-runtime-guard', 'Require runtime guard checks before each remediation attempt')
+    .option('--no-record', 'Disable cloud recording during verify/ship runs')
+    .option('--json', 'Output machine-readable JSON')
+    .action((options) => {
+    (0, remediate_1.remediateCommand)({
+        goal: options.goal,
+        planId: options.planId,
+        projectId: options.projectId,
+        maxFixAttempts: Number.isFinite(options.maxFixAttempts) ? options.maxFixAttempts : undefined,
+        policyOnly: options.policyOnly === true,
+        requirePlan: options.requirePlan === true,
+        strictArtifacts: options.strictArtifacts !== false,
+        enforceChangeContract: options.enforceChangeContract !== false,
+        requireRuntimeGuard: options.requireRuntimeGuard === true,
+        noRecord: options.record === false,
         json: options.json === true,
     });
 });

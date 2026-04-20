@@ -592,13 +592,28 @@ function parseBooleanFlag(raw, fallback) {
     }
     return fallback;
 }
+function parseNonNegativeInt(raw) {
+    if (!raw || !raw.trim())
+        return undefined;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed))
+        return undefined;
+    const rounded = Math.floor(parsed);
+    return rounded >= 0 ? rounded : undefined;
+}
 function resolveChangeContractOptionsFromEnv() {
+    const maxUnexpectedFiles = parseNonNegativeInt(process.env.NEURCODE_CHANGE_CONTRACT_MAX_UNEXPECTED_FILES);
+    const maxMissingExpectedSymbols = parseNonNegativeInt(process.env.NEURCODE_CHANGE_CONTRACT_MAX_MISSING_EXPECTED_SYMBOLS);
     return {
         enforceExpectedFiles: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_ENFORCE_EXPECTED_FILES, false),
         enforceActionMatching: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_ENFORCE_ACTION_MATCHING, true),
         allowRenameForModify: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_ALLOW_RENAME_FOR_MODIFY, true),
         enforceExpectedSymbols: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_ENFORCE_EXPECTED_SYMBOLS, false),
         enforceSymbolActionMatching: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_ENFORCE_SYMBOL_ACTION_MATCHING, false),
+        symbolTypeRelaxedMatching: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_SYMBOL_TYPE_RELAXED_MATCHING, true),
+        symbolFileBasenameFallback: parseBooleanFlag(process.env.NEURCODE_CHANGE_CONTRACT_SYMBOL_FILE_BASENAME_FALLBACK, false),
+        ...(maxUnexpectedFiles !== undefined ? { maxUnexpectedFiles } : {}),
+        ...(maxMissingExpectedSymbols !== undefined ? { maxMissingExpectedSymbols } : {}),
     };
 }
 function mapPlanFilesForChangeContract(files) {
