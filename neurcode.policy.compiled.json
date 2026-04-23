@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T14:01:31.170Z",
+  "source": {
+    "includeDashboardPolicies": true,
+    "policyLockPath": "/Users/ankushkumar/neurcode-cli-oss/neurcode.policy.lock.json",
+    "policyLockFingerprint": "a7990c9ba1c02bfca20a38cccf91134d03df49430e6f15b93c3e09ae99b1a5c3",
+    "policyPack": null,
+    "defaultRuleCount": 5,
+    "policyPackRuleCount": 0,
+    "customRuleCount": 0,
+    "effectiveRuleCount": 5
+  },
+  "statements": {
+    "intentConstraints": "No console.log statements",
+    "policyRules": []
+  },
+  "compilation": {
+    "deterministicRuleCount": 1,
+    "unmatchedStatements": [],
+    "deterministicRules": [
+      {
+        "id": "intent:no_console_log",
+        "source": "intent",
+        "statement": "No console.log statements",
+        "displayName": "No console.log",
+        "matchToken": "console.log",
+        "pattern": {
+          "source": "\\bconsole\\.log\\s*\\(",
+          "flags": "i"
+        }
+      }
+    ]
+  },
+  "fingerprint": "bd96387bb8e0fc976425fb021a3314c0106a462bca7a6793263849a694f8ab69",
+  "signature": {
+    "algorithm": "hmac-sha256",
+    "keyId": "local-mobjfsm2",
+    "signedAt": "2026-04-23T14:01:31.171Z",
+    "payloadHash": "d39231fcd6daa39a70b4321247c2221c1dd327c4d180c9ee5a40b33896cd5c1f",
+    "value": "8f3601a321ec14f7b7683b3b389a1ee18d535220e24d56529d6018276ef1c63d"
+  }
+}
