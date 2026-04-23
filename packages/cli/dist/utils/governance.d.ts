@@ -8,6 +8,7 @@ export interface GovernanceEvaluationInput {
     diffFiles: DiffFile[];
     contextCandidates?: string[];
     orgGovernance?: OrgGovernanceSettings | null;
+    requireSignedAiLogs?: boolean;
     signingKey?: string | null;
     signingKeyId?: string | null;
     signingKeys?: Record<string, string> | null;

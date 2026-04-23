@@ -35,7 +35,7 @@ function evaluateGovernance(input) {
     });
     let aiChangeLogIntegrity = writtenChangeLog.integrity;
     let governanceDecisionFinal = governanceDecision;
-    const requireSignedAiLogs = input.orgGovernance?.requireSignedAiLogs === true;
+    const requireSignedAiLogs = input.requireSignedAiLogs === true;
     if (requireSignedAiLogs) {
         aiChangeLogIntegrity = (0, analysis_1.verifyAiChangeLogIntegrity)(input.projectRoot, {
             requiredSigned: true,

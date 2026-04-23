@@ -821,9 +821,13 @@ function isGitRepository(cwd) {
     }
 }
 function isSignedAiLogsRequired(orgGovernanceSettings) {
-    return (orgGovernanceSettings?.requireSignedAiLogs === true ||
-        isEnabledFlag(process.env.NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS) ||
-        isEnabledFlag(process.env.NEURCODE_AI_LOG_REQUIRE_SIGNED));
+    const explicitRequirement = isEnabledFlag(process.env.NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS) ||
+        isEnabledFlag(process.env.NEURCODE_AI_LOG_REQUIRE_SIGNED);
+    if (explicitRequirement) {
+        return true;
+    }
+    const honorOrgRequirement = isEnabledFlag(process.env.NEURCODE_GOVERNANCE_ENFORCE_ORG_SIGNED_LOG_REQUIREMENT);
+    return honorOrgRequirement && orgGovernanceSettings?.requireSignedAiLogs === true;
 }
 function policyLockMismatchMessage(mismatches) {
     if (mismatches.length === 0) {
@@ -1012,6 +1016,7 @@ async function executePolicyOnlyMode(options, diffFiles, ignoreFilter, projectRo
     if (!options.json) {
         console.log(chalk.cyan('🛡️  General Governance mode (policy only, no plan linked)\n'));
     }
+    const signedLogsRequired = isSignedAiLogsRequired(orgGovernanceSettings);
     const governanceAnalysis = (0, governance_1.evaluateGovernance)({
         projectRoot,
         task: 'Policy-only verification',
@@ -1019,6 +1024,7 @@ async function executePolicyOnlyMode(options, diffFiles, ignoreFilter, projectRo
         diffFiles,
         contextCandidates: diffFiles.map((file) => file.path),
         orgGovernance: orgGovernanceSettings,
+        requireSignedAiLogs: signedLogsRequired,
         signingKey: aiLogSigningKey,
         signingKeyId: aiLogSigningKeyId,
         signingKeys: aiLogSigningKeys,
@@ -1029,7 +1035,6 @@ async function executePolicyOnlyMode(options, diffFiles, ignoreFilter, projectRo
         changeContract: changeContractSummary,
     });
     const contextPolicyViolations = governanceAnalysis.contextPolicy.violations.filter((item) => !ignoreFilter(item.file));
-    const signedLogsRequired = isSignedAiLogsRequired(orgGovernanceSettings);
     if (signedLogsRequired && !governanceAnalysis.aiChangeLogIntegrity.valid) {
         const message = `AI change-log integrity check failed: ${governanceAnalysis.aiChangeLogIntegrity.issues.join('; ') || 'unknown issue'}`;
         if (options.json) {
@@ -2246,6 +2251,7 @@ async function verifyCommand(options) {
                 diffFiles,
                 contextCandidates: diffFiles.map((file) => file.path),
                 orgGovernance: orgGovernanceSettings,
+                requireSignedAiLogs: signedLogsRequired,
                 signingKey: aiLogSigningKey,
                 signingKeyId: aiLogSigningKeyId,
                 signingKeys: aiLogSigningKeys,
@@ -2547,6 +2553,7 @@ async function verifyCommand(options) {
                 diffFiles,
                 contextCandidates: planFiles,
                 orgGovernance: orgGovernanceSettings,
+                requireSignedAiLogs: signedLogsRequired,
                 signingKey: aiLogSigningKey,
                 signingKeyId: aiLogSigningKeyId,
                 signingKeys: aiLogSigningKeys,

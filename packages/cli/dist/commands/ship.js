@@ -825,6 +825,15 @@ function isEnabledFlag(value) {
     const normalized = value.trim().toLowerCase();
     return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
+function isSignedAiLogsRequired(orgGovernance) {
+    const explicitRequirement = isEnabledFlag(process.env.NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS) ||
+        isEnabledFlag(process.env.NEURCODE_AI_LOG_REQUIRE_SIGNED);
+    if (explicitRequirement) {
+        return true;
+    }
+    const honorOrgRequirement = isEnabledFlag(process.env.NEURCODE_GOVERNANCE_ENFORCE_ORG_SIGNED_LOG_REQUIREMENT);
+    return honorOrgRequirement && orgGovernance?.requireSignedAiLogs === true;
+}
 function collectApplyWrittenFiles(output) {
     const clean = stripAnsi(output);
     const files = [];
@@ -1846,9 +1855,7 @@ async function shipCommand(goal, options) {
     const manualApprovalBypass = options.manualApproveHighRisk === true || process.env.NEURCODE_MANUAL_APPROVE_HIGH_RISK === '1';
     const governanceDecision = finalVerifyPayload.governanceDecision?.decision;
     const orgGovernance = finalVerifyPayload.orgGovernance || null;
-    const signedAiLogsRequired = orgGovernance?.requireSignedAiLogs === true ||
-        isEnabledFlag(process.env.NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS) ||
-        isEnabledFlag(process.env.NEURCODE_AI_LOG_REQUIRE_SIGNED);
+    const signedAiLogsRequired = isSignedAiLogsRequired(orgGovernance);
     const aiLogIntegrity = finalVerifyPayload.aiChangeLog?.integrity;
     const signedAiLogsValid = aiLogIntegrity?.valid === true && aiLogIntegrity?.signed === true;
     const orgManualApprovalRequired = orgGovernance?.requireManualApproval === true;

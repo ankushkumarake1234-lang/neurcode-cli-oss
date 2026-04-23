@@ -49,13 +49,16 @@ neurcode brain mode --storage-mode no-code
 neurcode brain doctor "is userid used instead of org id"
 ```
 
-## Enterprise Governance Signing
+## Enterprise Governance Signing (Optional Hardening)
 
 Use signed AI change logs for fail-closed governance in `verify`/`ship`.
 
 ```bash
-# Mandatory signed logs (fail closed when key material is missing)
+# Optional strict mode: require signed logs (fail closed when key material is missing)
 export NEURCODE_GOVERNANCE_REQUIRE_SIGNED_LOGS=1
+
+# Optional: honor org-level signed log requirement from control plane
+export NEURCODE_GOVERNANCE_ENFORCE_ORG_SIGNED_LOG_REQUIREMENT=1
 
 # Single-key mode
 export NEURCODE_GOVERNANCE_SIGNING_KEY="<strong-random-secret>"
@@ -68,10 +71,11 @@ export NEURCODE_GOVERNANCE_SIGNING_KEY_ID="kid-prod-2026-03"
 
 Notes:
 - `verify` writes and verifies `.neurcode/ai-change-log.json` with integrity chain checks.
-- If signed logs are required and integrity/signature checks fail, `verify` exits non-zero.
+- If strict signed-log mode is enabled and integrity/signature checks fail, `verify` exits non-zero.
 - `ship` will block deployment when required signed AI logs are missing/invalid.
 - `policy compile` and `plan` auto-sign deterministic artifacts when governance signing keys are configured.
 - Use `--require-signed-artifacts` (or `NEURCODE_VERIFY_REQUIRE_SIGNED_ARTIFACTS=1`) to fail closed on unsigned/tampered artifacts.
+- Default onboarding flow is non-blocking unless strict signing is explicitly enabled.
 
 ## Docs
 
