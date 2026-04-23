@@ -101,9 +101,9 @@ function toArtifactSignatureSummary(status) {
     };
 }
 function resolveCliComponentVersion() {
-    const fromEnv = process.env.NEURCODE_CLI_VERSION || process.env.npm_package_version;
-    if (fromEnv && fromEnv.trim()) {
-        return fromEnv.trim();
+    const explicitEnvVersion = process.env.NEURCODE_CLI_VERSION;
+    if (explicitEnvVersion && explicitEnvVersion.trim()) {
+        return explicitEnvVersion.trim();
     }
     try {
         const packagePath = (0, path_1.join)(__dirname, '../../package.json');
@@ -115,6 +115,12 @@ function resolveCliComponentVersion() {
     }
     catch {
         // Ignore and fall back.
+    }
+    const npmContextVersion = process.env.npm_package_version;
+    if (npmContextVersion
+        && npmContextVersion.trim()
+        && npmContextVersion.trim() !== '0.0.0') {
+        return npmContextVersion.trim();
     }
     return '0.0.0';
 }
