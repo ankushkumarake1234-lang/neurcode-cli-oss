@@ -702,6 +702,7 @@ program
     .option('--head', 'Verify changes against HEAD')
     .option('--base <ref>', 'Verify changes against a specific base ref')
     .option('--explain', 'Include AI change justification details in human-readable output')
+    .option('--demo', 'Demo mode: print extra explanatory output')
     .option('--json', 'Output results as JSON')
     .option('--record', 'Report verification results to Neurcode Cloud')
     .option('--api-key <key>', 'Neurcode API Key (overrides config and env var)')
@@ -713,6 +714,7 @@ program
         staged: options.staged,
         head: options.head,
         base: options.base,
+        demo: options.demo === true,
         explain: options.explain === true,
         json: options.json,
         record: options.record,

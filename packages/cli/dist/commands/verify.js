@@ -64,6 +64,7 @@ const governance_1 = require("../utils/governance");
 const policy_compiler_1 = require("../utils/policy-compiler");
 const change_contract_1 = require("../utils/change-contract");
 const diff_symbols_1 = require("../utils/diff-symbols");
+const advisory_signals_1 = require("../utils/advisory-signals");
 const runtime_guard_1 = require("../utils/runtime-guard");
 const artifact_signature_1 = require("../utils/artifact-signature");
 const policy_1 = require("@neurcode-ai/policy");
@@ -2308,6 +2309,9 @@ async function verifyCommand(options) {
             console.log(chalk.cyan('\n📊 Analyzing changes against plan...'));
             console.log(chalk.dim(`   Found ${summary.totalFiles} file(s) changed`));
             console.log(chalk.dim(`   ${summary.totalAdded} lines added, ${summary.totalRemoved} lines removed\n`));
+            if (options.demo) {
+                console.log(chalk.dim('   Demo mode enabled: showing extra context while keeping drift output short and grouped.\n'));
+            }
         }
         const runPolicyOnlyModeAndExit = async (source) => {
             const exitCode = await executePolicyOnlyMode(options, diffFiles, shouldIgnore, projectRoot, config, client, source, scopeTelemetry, projectId || undefined, orgGovernanceSettings, aiLogSigningKey, aiLogSigningKeyId, aiLogSigningKeys, aiLogSigner, compiledPolicyMetadata, changeContractSummary);
@@ -2400,10 +2404,104 @@ async function verifyCommand(options) {
                 });
                 process.exit(1);
             }
-            if (!options.json) {
-                console.log(chalk.yellow('⚠️  No Plan ID found. Falling back to General Governance (Policy Only).'));
+            let autoContractPath = null;
+            if (!changeContractRead.contract && !strictArtifactMode) {
+                try {
+                    const fallbackPlanId = `advisory_${Date.now()}`;
+                    const advisoryContract = buildMinimalAdvisoryContractFromDiff(diffFiles, fallbackPlanId);
+                    autoContractPath = (0, change_contract_1.writeChangeContract)(projectRoot, advisoryContract, options.changeContract);
+                    changeContractSummary = {
+                        path: autoContractPath,
+                        exists: true,
+                        enforced: false,
+                        valid: true,
+                        planId: advisoryContract.planId,
+                        contractId: advisoryContract.contractId,
+                        coverage: {
+                            expectedFiles: advisoryContract.expectedFiles.length,
+                            changedFiles: diffFiles.length,
+                            outOfContractFiles: 0,
+                            missingExpectedFiles: 0,
+                            blockedFilesTouched: 0,
+                            actionMismatches: 0,
+                            expectedSymbols: advisoryContract.expectedSymbols?.length || 0,
+                            changedSymbols: 0,
+                            missingExpectedSymbols: 0,
+                            blockedSymbolsTouched: 0,
+                            symbolActionMismatches: 0,
+                            symbolRenameMatches: 0,
+                            toleratedUnexpectedFiles: 0,
+                            toleratedMissingExpectedSymbols: 0,
+                        },
+                        signature: changeContractSummary.signature,
+                        violations: [],
+                    };
+                }
+                catch {
+                    autoContractPath = null;
+                }
             }
-            await runPolicyOnlyModeAndExit('fallback_missing_plan');
+            const message = 'No plan linked yet. Ran advisory verification for quick first-run experience. ' +
+                'Use `neurcode plan` and `neurcode contract import --auto-detect --write-change-contract` for full enforcement.';
+            const advisorySignals = (0, advisory_signals_1.evaluateAdvisorySignals)({
+                diffFiles,
+                summary,
+            });
+            const advisoryWarnCount = advisorySignals.filter((item) => item.severity === 'warn').length;
+            const advisoryVerdict = advisoryWarnCount > 0 ? 'WARN' : 'PASS';
+            const advisoryGrade = advisoryWarnCount > 0 ? 'C' : 'B';
+            const advisoryScore = advisoryWarnCount > 0 ? 60 : 70;
+            const advisoryViolations = advisorySignals.map((item) => ({
+                file: item.files[0] || '.',
+                rule: `advisory:${item.code.toLowerCase()}`,
+                severity: item.severity === 'warn' ? 'warn' : 'allow',
+                message: `${item.title}: ${item.detail}`,
+            }));
+            recordVerifyEvent(advisoryVerdict, `advisory_missing_plan;signals=${advisorySignals.length};warn=${advisoryWarnCount}`, diffFiles.map((f) => f.path));
+            if (options.json) {
+                emitVerifyJson({
+                    grade: advisoryGrade,
+                    score: advisoryScore,
+                    verdict: advisoryVerdict,
+                    violations: advisoryViolations,
+                    adherenceScore: advisoryScore,
+                    bloatCount: 0,
+                    bloatFiles: [],
+                    plannedFilesModified: 0,
+                    totalPlannedFiles: 0,
+                    message,
+                    scopeGuardPassed: true,
+                    mode: 'advisory_missing_plan',
+                    advisoryMode: true,
+                    advisorySignals,
+                    policyOnly: true,
+                    policyOnlySource: 'fallback_missing_plan',
+                    ...(autoContractPath
+                        ? {
+                            changeContract: {
+                                ...changeContractSummary,
+                                path: autoContractPath,
+                            },
+                        }
+                        : {
+                            changeContract: changeContractSummary,
+                        }),
+                });
+            }
+            else {
+                printFirstRunAdvisoryMessage(options.demo === true);
+                printAdvisorySignals(advisorySignals, options.demo === true);
+                if (autoContractPath) {
+                    console.log(chalk.green(`✅ Auto-generated minimal advisory contract: ${autoContractPath}`));
+                }
+                else if (!changeContractRead.contract) {
+                    console.log(chalk.yellow('⚠️  Could not auto-generate advisory contract; continuing without contract.'));
+                }
+                console.log(chalk.dim('Next steps: neurcode plan "<intent>"'));
+                console.log(chalk.dim('            neurcode contract import --auto-detect --write-change-contract'));
+                console.log(chalk.dim(`\nSummary: ${message}\n`));
+            }
+            process.exit(0);
         }
         if (!planId) {
             throw new Error('Plan ID resolution failed unexpectedly');
@@ -3993,5 +4091,58 @@ function displayVerifyResults(result, policyViolations) {
         console.log(chalk.green('\nNo drift detected.'));
     }
     console.log(chalk.dim(`\nSummary: ${result.message}\n`));
+}
+function printFirstRunAdvisoryMessage(demoMode) {
+    console.log(chalk.cyan('\nNeurcode first-run advisory mode'));
+    console.log(chalk.dim('Neurcode checks if your AI-generated code matches your intended plan.'));
+    console.log(chalk.dim('To get full enforcement:'));
+    console.log(chalk.dim('1. Define a plan'));
+    console.log(chalk.dim('2. Generate a contract'));
+    console.log(chalk.dim('Running in advisory mode for now.\n'));
+    if (demoMode) {
+        console.log(chalk.dim('Demo mode: this run is intentionally non-blocking to make evaluation easy.'));
+    }
+}
+function printAdvisorySignals(signals, demoMode) {
+    if (signals.length === 0) {
+        if (demoMode) {
+            console.log(chalk.dim('No high-signal advisory findings detected for this diff.'));
+        }
+        return;
+    }
+    console.log(chalk.yellow('\nAdvisory findings (non-blocking):'));
+    for (const signal of signals) {
+        const severityLabel = signal.severity === 'warn' ? chalk.yellow('[warn]') : chalk.dim('[info]');
+        console.log(`${severityLabel} ${signal.title}`);
+        console.log(chalk.dim(`  ${signal.detail}`));
+        signal.files.forEach((file) => {
+            console.log(chalk.dim(`  - ${file}`));
+        });
+    }
+}
+function buildMinimalAdvisoryContractFromDiff(diffFiles, fallbackPlanId) {
+    const expectedFiles = [...new Set(diffFiles.map((file) => toUnixPath(file.path)).filter(Boolean))];
+    const planFiles = expectedFiles.map((path) => {
+        const entry = diffFiles.find((file) => toUnixPath(file.path) === path);
+        const changeType = entry?.changeType;
+        const action = changeType === 'add' ? 'CREATE' : 'MODIFY';
+        return {
+            path,
+            action: action,
+            reason: 'Auto-generated advisory baseline from current diff',
+        };
+    });
+    return (0, change_contract_1.createChangeContract)({
+        planId: fallbackPlanId,
+        intent: 'Advisory baseline generated from current repository diff',
+        expectedFiles,
+        planFiles,
+        options: {
+            enforceExpectedFiles: false,
+            enforceActionMatching: false,
+            enforceExpectedSymbols: false,
+            enforceSymbolActionMatching: false,
+        },
+    });
 }
 //# sourceMappingURL=verify.js.map

@@ -37,6 +37,8 @@ interface VerifyOptions {
     runtimeGuard?: string;
     /** Print detailed AI change justification reasoning. */
     explain?: boolean;
+    /** Print extra explanatory output for demos/onboarding. */
+    demo?: boolean;
     /** Use queue-backed async verification mode on the API. */
     asyncMode?: boolean;
     /** Poll interval for async verification job status. */
